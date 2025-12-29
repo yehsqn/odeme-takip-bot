@@ -59,23 +59,22 @@ mongoose.connect(mongoURI)
 
 // 5. EŞLEŞME MANTIĞI (Masaüstü uygulamasından gelen kod)
 bot.on('message', async (msg) => {
+  const text = msg.text;
   const chatId = msg.chat.id;
-  const text = msg.text?.trim();
 
-  if (!text) return;
-
-  // 5-6 haneli sayı kontrolü (Eşleşme Kodu)
+  // Sayı içeren her mesajı kontrol et (Eşleşme kodu mu diye bak)
+  // Eğer gelen mesaj 5 veya 6 haneli bir sayıysa (Örn: 19998)
   if (/^\d{5,6}$/.test(text)) {
     try {
-      // Bu kodu veritabanında arıyoruz (Masaüstü uygulaması User tablosuna kaydediyor)
+      // MongoDB'de bu geçici kodu bekleyen bir kullanıcı var mı bak
       const user = await User.findOne({ pairingCode: text });
-      
+
       if (user) {
-        user.telegramChatId = chatId.toString();
-        user.pairingCode = null; // Kodu temizle, tekrar kullanılamasın
+        user.telegramChatId = chatId.toString(); // Şemada telegramChatId olarak tanımlı
+        user.pairingCode = null; // Kodu bir daha kullanılmasın diye sıfırla
         await user.save();
         
-        // Ayarları da güncelle
+        // Ayarları da güncelle (Bildirim döngüsü için gerekli)
         let settings = await Settings.findOne({ userId: user._id });
         if (!settings) {
           settings = new Settings({ userId: user._id });
@@ -83,13 +82,13 @@ bot.on('message', async (msg) => {
         settings.telegram.chatId = chatId.toString();
         await settings.save();
 
-        bot.sendMessage(chatId, `✅ Eşleşme Başarılı! Hoş geldin, ${user.email}. Artık ödeme hatırlatmalarını buradan alacaksın.`);
+        bot.sendMessage(chatId, `✅ Eşleşme Başarılı! \n\nArtık masaüstü uygulamasından girdiğin ödemeler için buradan bildirim alacaksın.`);
         console.log(`Kullanıcı eşleşti: ${user.email} (ChatID: ${chatId})`);
       } else {
-        bot.sendMessage(chatId, `❌ Geçersiz veya süresi dolmuş kod. Lütfen uygulamadan yeni kod alıp tekrar deneyin.`);
+        bot.sendMessage(chatId, `❌ Kod geçersiz veya süresi dolmuş. Lütfen uygulamadan yeni bir kod al.`);
       }
-    } catch (error) {
-      console.error('Eşleşme Hatası:', error);
+    } catch (err) {
+      console.error('Eşleşme Hatası:', err);
       bot.sendMessage(chatId, `❌ Bir hata oluştu.`);
     }
   } else if (text === '/start') {
@@ -198,5 +197,9 @@ http.createServer((req, res) => {
 }).listen(PORT, () => {
   console.log(`🌐 HTTP Sunucusu ${PORT} portunda dinleniyor.`);
 });
-
+const http = require('http');
+http.createServer((req, res) => {
+  res.write('Bot is active');
+  res.end();
+}).listen(process.env.PORT || 3000);
 console.log("🚀 Bot başlatıldı ve dinlemeye geçti...");
