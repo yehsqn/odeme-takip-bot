@@ -62,12 +62,68 @@ mongoose.connect(mongoURI)
     console.log("HATA DETAYI:", err.message);
   });
 
-// 5. EŞLEŞME MANTIĞI (Kalıcı Eşleşme)
-bot.on('message', async (msg) => {
-  const text = msg.text;
-  const chatId = msg.chat.id;
+// 5. BUTON TIKLAMALARINI DİNLE (Callback Query)
+bot.on('callback_query', async (query) => {
+  const { data, message, id } = query;
+  // Format: PAY:PaymentID:Date
+  const parts = data.split(':');
+  
+  if (parts.length < 3) return;
 
-  if (text && /^\d{5,6}$/.test(text)) {
+  const action = parts[0];
+  const paymentId = parts[1];
+  const date = parts.slice(2).join(':'); // Tarih bazen : içerebilir ama burada YYYY-MM-DD formatı bekliyoruz
+
+  if (action === 'PAY') {
+    try {
+      const payment = await Payment.findById(paymentId);
+      if (payment) {
+        const installment = payment.installmentPlan.find(i => i.date === date);
+        if (installment && !installment.isPaid) {
+          installment.isPaid = true;
+          payment.markModified('installmentPlan');
+          await payment.save();
+
+          // Cevap ver (Toast mesajı)
+          await bot.answerCallbackQuery(id, { text: 'Ödemeniz başarıyla kaydedildi! ✅' });
+
+          // Mesajı güncelle: Tıklanan butonu kaldır ve metne "Ödendi" ekle
+          const currentKeyboard = message.reply_markup.inline_keyboard;
+          // Tıklanan butonu filtrele (data eşleşmesine göre)
+          const newKeyboard = currentKeyboard.filter(row => row[0].callback_data !== data);
+          
+          let newText = message.text;
+          newText += `\n✅ ${payment.title} Ödendi`;
+
+          await bot.editMessageText(newText, {
+            chat_id: message.chat.id,
+            message_id: message.message_id,
+            parse_mode: 'HTML', 
+            reply_markup: { inline_keyboard: newKeyboard }
+          });
+        } else {
+          await bot.answerCallbackQuery(id, { text: 'Bu taksit zaten ödenmiş veya bulunamadı.' });
+        }
+      } else {
+         await bot.answerCallbackQuery(id, { text: 'Ödeme kaydı bulunamadı.' });
+      }
+    } catch (error) {
+      console.error('Callback Error:', error);
+      await bot.answerCallbackQuery(id, { text: 'İşlem sırasında bir hata oluştu.' });
+    }
+  }
+});
+
+// 6. MESAJLARI DİNLE (Eşleşme ve Komutlar)
+bot.on('message', async (msg) => {
+  const text = msg.text ? msg.text.trim() : '';
+  const chatId = msg.chat.id;
+  const lowerText = text.toLowerCase();
+
+  console.log(`[Telegram] Mesaj alındı: ${text} (ChatID: ${chatId})`);
+
+  // EŞLEŞME KODU KONTROLÜ (5-6 haneli sayı)
+  if (/^\d{5,6}$/.test(text)) {
     try {
       // 1. Bu kodu bekleyen kullanıcıyı bul
       const user = await User.findOne({ pairingCode: text });
@@ -78,7 +134,7 @@ bot.on('message', async (msg) => {
         user.pairingCode = null; // Kodu imha et (güvenlik için)
         await user.save();
 
-        // Ayarları da güncelle (Opsiyonel ama tutarlılık için iyi)
+        // Ayarları da güncelle
         try {
           let settings = await Settings.findOne({ userId: user._id });
           if (settings) {
@@ -104,40 +160,124 @@ bot.on('message', async (msg) => {
       console.error('Eşleşme Hatası:', err);
       bot.sendMessage(chatId, "⚠️ Bir hata oluştu, lütfen daha sonra dene.");
     }
-  } else if (text === '/start') {
+  } 
+  // KOMUTLAR: /start
+  else if (lowerText === '/start') {
     bot.sendMessage(chatId, '👋 Merhaba! Ödeme Takip Sistemi ile eşleşmek için masaüstü uygulamasındaki "Ayarlar" bölümünden aldığın 5-6 haneli kodu buraya yaz.');
+  }
+  // KOMUTLAR: ödemelerim / payments
+  else if (lowerText === 'ödemelerim' || lowerText === 'payments') {
+    try {
+      console.log(`[Telegram] 'ödemelerim' komutu işleniyor... ChatID: ${chatId}`);
+      
+      const user = await User.findOne({ telegramChatId: chatId.toString() });
+      
+      if (!user) {
+        await bot.sendMessage(chatId, '❌ Bu Telegram hesabı ile eşleşmiş bir kullanıcı bulunamadı. Lütfen uygulamadan eşleştirme yapın.');
+        return;
+      }
+
+      // Ödemeleri getir
+      const payments = await Payment.find({ userId: user._id });
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      const upcomingPayments = payments.flatMap(p => 
+        p.installmentPlan
+          .filter(inst => !inst.isPaid)
+          .map(inst => ({ ...inst, paymentTitle: p.title, type: p.type, paymentId: p._id }))
+      ).sort((a, b) => new Date(a.date) - new Date(b.date));
+
+      if (upcomingPayments.length === 0) {
+         await bot.sendMessage(chatId, '🎉 Harika! Hiç ödenmemiş borcunuz bulunmuyor.');
+         return;
+      }
+
+      // Özet Mesaj Oluştur
+      const totalAmount = upcomingPayments.reduce((sum, p) => sum + p.amount, 0);
+      
+      let messageText = `📋 <b>Ödeme Listesi</b>\n\nToplam <b>${upcomingPayments.length}</b> adet ödenmemiş borcunuz var.\n\n`;
+      const inlineKeyboard = [];
+
+      // İlk 15 ödemeyi göster
+      upcomingPayments.slice(0, 15).forEach((p) => {
+          const dateStr = new Date(p.date).toLocaleDateString('tr-TR');
+          const instDate = new Date(p.date);
+          instDate.setHours(0, 0, 0, 0);
+          const diffTime = instDate - today;
+          const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+          
+          let dayText = '';
+          if (diffDays < 0) dayText = ` (⚠️ ${Math.abs(diffDays)} gün gecikti)`;
+          else if (diffDays === 0) dayText = ' (BUGÜN)';
+          else if (diffDays === 1) dayText = ' (Yarın)';
+          else dayText = ` (${diffDays} gün kaldı)`;
+
+          messageText += `▪️ <b>${p.paymentTitle}</b> - ${p.amount.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL - ${dateStr}${dayText}\n`;
+          
+          // Öde Butonu Ekle
+          inlineKeyboard.push([{
+            text: `✅ Öde: ${p.paymentTitle} (${p.amount.toLocaleString('tr-TR')} TL)`,
+            callback_data: `PAY:${p.paymentId}:${p.date}`
+          }]);
+      });
+
+      if (upcomingPayments.length > 15) {
+          messageText += `\n<i>...ve ${upcomingPayments.length - 15} diğer ödeme.</i>`;
+      }
+
+      messageText += `\nToplam Borç: <b>${totalAmount.toLocaleString('tr-TR', { style: 'currency', currency: 'TRY' })}</b>`;
+
+      await bot.sendMessage(chatId, messageText, { 
+          parse_mode: 'HTML',
+          reply_markup: { inline_keyboard: inlineKeyboard }
+      });
+
+    } catch (error) {
+      console.error('Telegram Komut Hatası:', error);
+      await bot.sendMessage(chatId, '⚠️ Bir hata oluştu. Lütfen daha sonra tekrar deneyiniz.');
+    }
   }
 });
 
-// 6. GÜNLÜK KONTROL FONKSİYONU (Kalıcı Hafızadan Okuma)
+// 7. GÜNLÜK KONTROL FONKSİYONU (Kalıcı Hafızadan Okuma)
 async function checkAndSendReminders() {
   console.log('🔄 Ödeme kontrolleri yapılıyor...');
   try {
-    // ChatID'si olan tüm kullanıcıları bul (Gmail tabanlı tarama)
+    // ChatID'si olan tüm kullanıcıları bul
     const usersWithChatId = await User.find({ 
       telegramChatId: { $exists: true, $ne: null } 
     });
 
     const today = new Date();
     today.setHours(0, 0, 0, 0);
+    const todayStr = today.toISOString().split('T')[0];
 
     for (const user of usersWithChatId) {
       const { telegramChatId, _id: userId, email } = user;
       
-      // Kullanıcının ayarlarını kontrol et (Bildirimler açık mı?)
-      const settings = await Settings.findOne({ userId });
+      // Ayarları kontrol et
+      let settings = await Settings.findOne({ userId });
+      
+      // Bildirimler kapalıysa atla
       if (settings && settings.telegram && settings.telegram.notificationsEnabled === false) {
         continue;
+      }
+      
+      // Bugün zaten bildirim gittiyse atla
+      if (settings && settings.lastTelegramNotification === todayStr) {
+          console.log(`User ${email} için bugün zaten bildirim atıldı.`);
+          continue;
       }
 
       // Ödemeleri getir
       const payments = await Payment.find({ userId });
       
-      // Ödenmemiş taksitleri bul ve tarihine göre filtrele (0-3 gün kalanlar)
+      // Yaklaşan ödemeleri filtrele (0-3 gün)
       const upcomingPayments = payments.flatMap(p => 
         p.installmentPlan
           .filter(inst => !inst.isPaid)
-          .map(inst => ({ ...inst, paymentTitle: p.title, type: p.type }))
+          .map(inst => ({ ...inst, paymentTitle: p.title, type: p.type, paymentId: p._id }))
       ).filter(inst => {
         const instDate = new Date(inst.date);
         instDate.setHours(0, 0, 0, 0);
@@ -145,56 +285,48 @@ async function checkAndSendReminders() {
         const diffTime = instDate - today;
         const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
         
-        // 3 gün, 2 gün, 1 gün ve BUGÜN (0)
         return diffDays >= 0 && diffDays <= 3;
       });
 
       if (upcomingPayments.length > 0) {
-        // 3, 2, 1, 0 gün mantığını uygula
-        // Her gün hatırlatıcı göndermek istiyoruz, yani lastNotified kontrolünü güncellememiz lazım
-        // Kullanıcı isteği: "Ödemeye 3 gün kala, 2 gün kala, 1 gün kala ve son gün; her gün... hatırlatıcı gönderilmeli."
-        // Mevcut kod lastNotified === todayStr ise göndermiyor. Bu doğru, çünkü günde 1 kere çalışmalı.
-        // Ama scheduleJob 09, 12, 14 saatlerinde çalışıyor. 
-        // Eğer 09'da gönderdiyse, 12'de tekrar göndermemeli.
-        
-        let lastNotified = null;
-        if (settings) {
-            lastNotified = settings.lastTelegramNotification;
-        }
-        
-        const todayStr = today.toISOString().split('T')[0];
-        
-        // Eğer bugün zaten bildirim gittiyse atla
-        if (lastNotified === todayStr) {
-           console.log(`User ${email} için bugün zaten bildirim atıldı.`);
-           continue;
-        }
-
         const totalAmount = upcomingPayments.reduce((sum, p) => sum + p.amount, 0);
         
-        // Mesajı oluştur
-        const paymentDetails = upcomingPayments.slice(0, 10).map(p => {
+        // GRUPLANDIRILMIŞ MESAJ OLUŞTUR
+        let messageText = `📢 <b>Ödeme Hatırlatıcı</b>\n\nSayın ${email}, yaklaşan <b>${upcomingPayments.length}</b> adet ödemeniz var (Son 3 gün).\n\n`;
+        const inlineKeyboard = [];
+
+        upcomingPayments.slice(0, 10).forEach(p => {
           const dateStr = new Date(p.date).toLocaleDateString('tr-TR');
           const instDate = new Date(p.date);
           instDate.setHours(0, 0, 0, 0);
           const diffTime = instDate - today;
-          const daysLeft = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+          const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
           
           let dayText = '';
-          if (daysLeft === 0) dayText = ' (BUGÜN)';
-          else if (daysLeft === 1) dayText = ' (Yarın)';
-          else dayText = ` (${daysLeft} gün kaldı)`;
+          if (diffDays === 0) dayText = ' (BUGÜN)';
+          else if (diffDays === 1) dayText = ' (Yarın)';
+          else dayText = ` (${diffDays} gün kaldı)`;
 
-          return `▪️ <b>${dateStr}</b>${dayText} - ${p.paymentTitle}: <b>${p.amount.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL</b>`;
-        }).join('\n');
+          messageText += `▪️ <b>${p.paymentTitle}</b> - ${p.amount.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL - ${dateStr}${dayText}\n`;
+          
+          // Buton ekle
+          inlineKeyboard.push([{
+            text: `✅ Öde: ${p.paymentTitle} (${p.amount.toLocaleString('tr-TR')} TL)`,
+            callback_data: `PAY:${p.paymentId}:${p.date}`
+          }]);
+        });
         
-        const moreCount = upcomingPayments.length - 10;
-        const moreText = moreCount > 0 ? `\n<i>...ve ${moreCount} diğer ödeme.</i>` : '';
+        if (upcomingPayments.length > 10) {
+           messageText += `\n<i>...ve ${upcomingPayments.length - 10} diğer ödeme.</i>`;
+        }
 
-        const message = `📢 <b>Ödeme Hatırlatıcı</b>\n\nSayın ${email}, yaklaşan <b>${upcomingPayments.length}</b> adet ödemeniz var.\n\n${paymentDetails}${moreText}\n\nToplam Tutar: <b>${totalAmount.toLocaleString('tr-TR', { style: 'currency', currency: 'TRY' })}</b>\n\nLütfen kontrol ediniz.`;
+        messageText += `\nToplam Tutar: <b>${totalAmount.toLocaleString('tr-TR', { style: 'currency', currency: 'TRY' })}</b>\n\nÖdeme yapmak için butonları kullanabilirsiniz.`;
         
         try {
-          await bot.sendMessage(telegramChatId, message, { parse_mode: 'HTML' });
+          await bot.sendMessage(telegramChatId, messageText, { 
+              parse_mode: 'HTML',
+              reply_markup: { inline_keyboard: inlineKeyboard }
+          });
           console.log(`✅ Bildirim gönderildi: ${email}`);
           
           // Son bildirim tarihini güncelle
@@ -214,13 +346,13 @@ async function checkAndSendReminders() {
   }
 }
 
-// 7. ZAMANLAYICI (Her gün 09:00, 12:00 ve 14:00'te çalışır)
+// 8. ZAMANLAYICI (Her gün 09:00, 12:00 ve 14:00'te çalışır)
 schedule.scheduleJob('0 9,12,14 * * *', () => {
   console.log('⏰ Otomatik Kontrol (09/12/14) çalışıyor...');
   checkAndSendReminders();
 });
 
-// Render Health Check için basit HTTP sunucusu (Render Web Service kullanılıyorsa gereklidir)
+// 9. HTTP SUNUCUSU (Render Health Check)
 const PORT = process.env.PORT || 3000;
 http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
