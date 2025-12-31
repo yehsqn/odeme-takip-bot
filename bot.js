@@ -12,7 +12,9 @@ const UserSchema = new mongoose.Schema({
   password: { type: String, required: true },
   telegramChatId: String,
   pairingCode: String,
+  pairingCodeExpiresAt: Date,
   pin: String,
+  incomeExpensePassword: String,
   createdAt: { type: Date, default: Date.now }
 });
 
@@ -143,19 +145,26 @@ async function checkAndSendReminders() {
         const diffTime = instDate - today;
         const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
         
-        // Vadesi geçmiş (-gün) veya yaklaşan (+3 gün)
+        // 3 gün, 2 gün, 1 gün ve BUGÜN (0)
         return diffDays >= 0 && diffDays <= 3;
       });
 
       if (upcomingPayments.length > 0) {
-        // Bugün zaten bildirim gönderildiyse tekrar gönderme
+        // 3, 2, 1, 0 gün mantığını uygula
+        // Her gün hatırlatıcı göndermek istiyoruz, yani lastNotified kontrolünü güncellememiz lazım
+        // Kullanıcı isteği: "Ödemeye 3 gün kala, 2 gün kala, 1 gün kala ve son gün; her gün... hatırlatıcı gönderilmeli."
+        // Mevcut kod lastNotified === todayStr ise göndermiyor. Bu doğru, çünkü günde 1 kere çalışmalı.
+        // Ama scheduleJob 09, 12, 14 saatlerinde çalışıyor. 
+        // Eğer 09'da gönderdiyse, 12'de tekrar göndermemeli.
+        
         let lastNotified = null;
         if (settings) {
             lastNotified = settings.lastTelegramNotification;
         }
-
+        
         const todayStr = today.toISOString().split('T')[0];
         
+        // Eğer bugün zaten bildirim gittiyse atla
         if (lastNotified === todayStr) {
            console.log(`User ${email} için bugün zaten bildirim atıldı.`);
            continue;
