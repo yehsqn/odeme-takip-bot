@@ -5,7 +5,8 @@ const crypto = require('crypto');
 const http = require('http');
 
 // 1. MONGODB BAĞLANTISI
-const mongoURI = 'mongodb+srv://yehsqn:yehsan1907efe42pbag10kdb17@cluster0.cbct0mv.mongodb.net/OdemeTakipDB?retryWrites=true&w=majority';
+require('dotenv').config();
+const mongoURI = process.env.MONGO_URI || 'mongodb+srv://yehsqn:yehsan1907efe42pbag10kdb17@cluster0.cbct0mv.mongodb.net/OdemeTakipDB?retryWrites=true&w=majority';
 
 // 2. MONGOOSE ŞEMALARI
 const UserSchema = new mongoose.Schema({
@@ -38,7 +39,7 @@ const SettingsSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, unique: true },
   cutOffDay: { type: Number, default: 10 },
   telegram: {
-    botToken: { type: String, default: '8329470679:AAFeVOV3Hexp8GmNyCMR-RSYosSukBRcWhg' },
+    botToken: { type: String },
     chatId: String,
     notificationsEnabled: { type: Boolean, default: true }
   },
@@ -53,7 +54,7 @@ const Payment = mongoose.model('Payment', PaymentSchema);
 const Settings = mongoose.model('Settings', SettingsSchema);
 
 // 3. BOT AYARLARI
-const token = '8329470679:AAFgx7WOzZhe8wI46ytq1VfFPm2u91O-S_0';
+const token = process.env.TELEGRAM_BOT_TOKEN || '8329470679:AAFgx7WOzZhe8wI46ytq1VfFPm2u91O-S_0';
 const bot = new TelegramBot(token, { polling: true });
 
 // Bot Konuşma Durumları
