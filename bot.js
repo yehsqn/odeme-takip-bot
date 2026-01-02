@@ -71,9 +71,17 @@ bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
     const text = msg.text;
 
+    console.log(`📩 Mesaj alındı: ${text} (ChatID: ${chatId})`);
+
     if (!text) return;
 
     const textLower = text.toLowerCase();
+
+    // --- PING (Durum Kontrolü) ---
+    if (textLower === '/ping' || textLower === 'ping') {
+        await bot.sendMessage(chatId, '🏓 Pong! Bot çalışıyor.\n📅 Sunucu Zamanı: ' + new Date().toLocaleString('tr-TR'));
+        return;
+    }
 
     // --- PAIRING (Eşleştirme) ---
     if (text.startsWith('/start ')) {
