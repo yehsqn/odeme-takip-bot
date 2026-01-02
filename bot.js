@@ -5,7 +5,8 @@ const crypto = require('crypto');
 const http = require('http');
 
 // 1. MONGODB BAĞLANTISI
-const mongoURI = '***REMOVED***';
+require('dotenv').config();
+const mongoURI = process.env.MONGO_URI || '***REMOVED***';
 
 // 2. MONGOOSE ŞEMALARI
 const UserSchema = new mongoose.Schema({
@@ -38,7 +39,7 @@ const SettingsSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, unique: true },
   cutOffDay: { type: Number, default: 10 },
   telegram: {
-    botToken: { type: String, default: '***REMOVED***' },
+    botToken: { type: String },
     chatId: String,
     notificationsEnabled: { type: Boolean, default: true }
   },
@@ -53,7 +54,7 @@ const Payment = mongoose.model('Payment', PaymentSchema);
 const Settings = mongoose.model('Settings', SettingsSchema);
 
 // 3. BOT AYARLARI
-const token = '***REMOVED***';
+const token = process.env.TELEGRAM_BOT_TOKEN || '***REMOVED***';
 const bot = new TelegramBot(token, { polling: true });
 
 // Bot Konuşma Durumları
