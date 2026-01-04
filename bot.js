@@ -2,6 +2,7 @@ const TelegramBot = require('node-telegram-bot-api');
 const mongoose = require('mongoose');
 const schedule = require('node-schedule');
 const http = require('http');
+const bcrypt = require('bcryptjs');
 
 // 1. MONGODB BAĞLANTISI
 const mongoURI = '***REMOVED***';
@@ -43,7 +44,11 @@ const SettingsSchema = new mongoose.Schema({
   banks: { type: Array, default: [] },
   notificationDays: { type: Number, default: 3 },
   lastTelegramNotification: String,
-  appPassword: String
+  appPassword: String,
+  backup: {
+    enabled: { type: Boolean, default: false },
+    time: { type: String, default: '00:00' }
+  }
 });
 
 const User = mongoose.model('User', UserSchema);
@@ -183,6 +188,58 @@ bot.on('message', async (msg) => {
       bot.sendMessage(chatId, "⚠️ Bir hata oluştu, lütfen daha sonra dene.");
     }
   } 
+  // KOMUTLAR: /sifre
+  else if (lowerText === '/sifre') {
+    try {
+        console.log(`[BOT] /sifre komutu alındı: ${chatId}`);
+        const user = await User.findOne({ telegramChatId: chatId.toString() });
+        
+        if (!user) {
+          await bot.sendMessage(chatId, '❌ Bu Telegram hesabı ile eşleşmiş bir kullanıcı bulunamadı. Lütfen önce uygulamanızdan eşleşme yapın.');
+          return;
+        }
+
+        // Generate new password
+        const newPassword = Math.floor(100000 + Math.random() * 900000).toString();
+        const hashedPassword = await bcrypt.hash(newPassword, 10);
+        
+        user.password = hashedPassword;
+        await user.save();
+        
+        await bot.sendMessage(chatId, `✅ <b>Şifre Sıfırlama Başarılı</b>\n\n🔑 Yeni Giriş Şifreniz: <code>${newPassword}</code>\n\nLütfen giriş yaptıktan sonra şifrenizi değiştirin.`, { parse_mode: 'HTML' });
+        console.log(`Şifre sıfırlandı: ${user.email}`);
+        
+      } catch (error) {
+        console.error('Bot Password Reset Error:', error);
+        await bot.sendMessage(chatId, '❌ Bir hata oluştu.');
+      }
+  }
+  // KOMUTLAR: /gelirgidersifre
+  else if (lowerText === '/gelirgidersifre') {
+      try {
+        console.log(`[BOT] /gelirgidersifre komutu alındı: ${chatId}`);
+        const user = await User.findOne({ telegramChatId: chatId.toString() });
+        
+        if (!user) {
+          await bot.sendMessage(chatId, '❌ Bu Telegram hesabı ile eşleşmiş bir kullanıcı bulunamadı. Lütfen önce uygulamanızdan eşleşme yapın.');
+          return;
+        }
+
+        // Generate new password
+        const newPassword = Math.floor(100000 + Math.random() * 900000).toString();
+        const hashedPassword = await bcrypt.hash(newPassword, 10);
+        
+        user.incomeExpensePassword = hashedPassword;
+        await user.save();
+        
+        await bot.sendMessage(chatId, `✅ <b>Gelir/Gider Şifresi Sıfırlandı</b>\n\n🔑 Yeni Şifreniz: <code>${newPassword}</code>\n\nBu şifre ile Gelir/Gider sayfasına erişebilirsiniz.`, { parse_mode: 'HTML' });
+        console.log(`Gelir/Gider şifresi sıfırlandı: ${user.email}`);
+        
+      } catch (error) {
+        console.error('Bot Income Password Reset Error:', error);
+        await bot.sendMessage(chatId, '❌ Bir hata oluştu.');
+      }
+  }
   // KOMUTLAR: /start
   else if (lowerText === '/start') {
     bot.sendMessage(chatId, '👋 Merhaba! Ödeme Takip Sistemi ile eşleşmek için masaüstü uygulamasındaki "Ayarlar" bölümünden aldığın 5-6 haneli kodu buraya yaz.');
@@ -374,19 +431,33 @@ schedule.scheduleJob('0 9,12,14 * * *', () => {
   checkAndSendReminders();
 });
 
-// 9. OTOMATİK YEDEKLEME (Her gece 00:00'da)
-schedule.scheduleJob('0 0 * * *', async () => {
-  console.log('📦 Otomatik Yedekleme Başlatılıyor...');
+// 9. OTOMATİK YEDEKLEME (Dakikalık Kontrol - Kullanıcı Ayarına Göre)
+schedule.scheduleJob('* * * * *', async () => {
+  const now = new Date();
+  const currentTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  
   try {
-    const users = await User.find({ telegramChatId: { $exists: true, $ne: null } });
+    // Yedekleme ayarı açık olan ve saati gelen ayarları bul
+    const targetSettings = await Settings.find({ 
+      'backup.enabled': true, 
+      'backup.time': currentTime 
+    });
 
-    for (const user of users) {
+    if (targetSettings.length > 0) {
+      console.log(`📦 Otomatik Yedekleme Tetiklendi: ${currentTime} (${targetSettings.length} kullanıcı)`);
+    }
+
+    for (const setting of targetSettings) {
       try {
-        const userId = user._id;
+        const userId = setting.userId;
+        const user = await User.findById(userId);
+
+        if (!user || !user.telegramChatId) continue;
+
         const chatId = user.telegramChatId;
 
         // Kullanıcıya ait tüm verileri çek
-        const [userData, payments, settings, dailyIncomes] = await Promise.all([
+        const [userData, payments, settingsData, dailyIncomes] = await Promise.all([
           User.findById(userId).lean(),
           Payment.find({ userId }).lean(),
           Settings.findOne({ userId }).lean(),
@@ -396,7 +467,7 @@ schedule.scheduleJob('0 0 * * *', async () => {
         const backupData = {
           timestamp: new Date().toISOString(),
           user: userData,
-          settings: settings,
+          settings: settingsData,
           payments: payments,
           dailyIncomes: dailyIncomes
         };
@@ -415,7 +486,7 @@ schedule.scheduleJob('0 0 * * *', async () => {
 
         console.log(`✅ Yedek gönderildi: ${user.email}`);
       } catch (err) {
-        console.error(`❌ Yedekleme hatası (${user.email}):`, err);
+        console.error(`❌ Yedekleme hatası (UserID: ${setting.userId}):`, err);
       }
     }
   } catch (globalErr) {
