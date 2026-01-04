@@ -200,8 +200,8 @@ bot.on('message', async (msg) => {
           return;
         }
 
-        // Generate new password
-        const newPassword = Math.floor(100000 + Math.random() * 900000).toString();
+        // Generate new password (8 digits)
+        const newPassword = Math.floor(10000000 + Math.random() * 90000000).toString();
         const hashedPassword = await bcrypt.hash(newPassword, 10);
         
         user.password = hashedPassword;
