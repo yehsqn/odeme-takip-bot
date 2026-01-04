@@ -1,17 +1,12 @@
 const TelegramBot = require('node-telegram-bot-api');
 const mongoose = require('mongoose');
 const schedule = require('node-schedule');
-const crypto = require('crypto');
-const nodemailer = require('nodemailer');
-require('dotenv').config();
+const http = require('http');
 
-// --- 1. CONFIGURATION ---
-const mongoURI = process.env.MONGO_URI || '***REMOVED***';
-const token = process.env.TELEGRAM_BOT_TOKEN || '***REMOVED***';
-const emailUser = process.env.EMAIL_USER || 'yehsanefe20@gmail.com';
-const emailPass = process.env.EMAIL_PASS || 'xpvn sqnt pvan tgon'; // Uygulama şifresi
+// 1. MONGODB BAĞLANTISI
+const mongoURI = '***REMOVED***';
 
-// --- 2. MONGOOSE SCHEMAS ---
+// 2. MONGOOSE ŞEMALARI (Masaüstü uygulamasıyla birebir aynı olmalı)
 const UserSchema = new mongoose.Schema({
   email: { type: String, required: true, unique: true },
   password: { type: String, required: true },
@@ -19,11 +14,8 @@ const UserSchema = new mongoose.Schema({
   pairingCode: String,
   pairingCodeExpiresAt: Date,
   pin: String,
-  incomeExpensePassword: { type: String },
-  resetIncomePasswordToken: String,
-  resetIncomePasswordExpires: Date,
-  createdAt: { type: Date, default: Date.now },
-  role: { type: String, default: 'user' }
+  incomeExpensePassword: String,
+  createdAt: { type: Date, default: Date.now }
 });
 
 const PaymentSchema = new mongoose.Schema({
@@ -38,431 +30,412 @@ const PaymentSchema = new mongoose.Schema({
   type: String,
   installmentPlan: Array,
   createdAt: String
-}, { collection: 'payments' });
+});
 
 const SettingsSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, unique: true },
   cutOffDay: { type: Number, default: 10 },
   telegram: {
-    botToken: { type: String },
+    botToken: { type: String, default: '***REMOVED***' },
     chatId: String,
     notificationsEnabled: { type: Boolean, default: true }
   },
   banks: { type: Array, default: [] },
   notificationDays: { type: Number, default: 3 },
-  lastTelegramNotification: String
+  lastTelegramNotification: String,
+  appPassword: String
 });
-
-// Daily Income/Expense Schema
-const DailyIncomeSchema = new mongoose.Schema({
-    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-    date: { type: String, required: true }, // YYYY-MM-DD
-    cash: { type: Number, default: 0 },
-    cc: { type: Number, default: 0 },
-    salary: { type: Number, default: 0 },
-    insurance: { type: Number, default: 0 },
-    other: { type: Number, default: 0 },
-    expenses: [{
-      id: String,
-      description: String,
-      amount: Number,
-      category: String,
-      method: String, // 'cash', 'cc'
-      createdAt: { type: Date, default: Date.now }
-    }]
-  }, { collection: 'dailyincomes' });
 
 const User = mongoose.model('User', UserSchema);
 const Payment = mongoose.model('Payment', PaymentSchema);
 const Settings = mongoose.model('Settings', SettingsSchema);
+
+// Daily Income Schema - Store as array of days for flexibility
+const DailyIncomeSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  date: { type: String, required: true }, // "YYYY-MM-DD"
+  cash: { type: Number, default: 0 },
+  cc: { type: Number, default: 0 },
+  salary: { type: Number, default: 0 },
+  insurance: { type: Number, default: 0 },
+  other: { type: Number, default: 0 },
+  expenses: [{ // New detailed expenses
+    description: String,
+    amount: Number,
+    date: { type: Date, default: Date.now }
+  }]
+});
+
+// Compound index for daily income to ensure one record per day per user
+DailyIncomeSchema.index({ userId: 1, date: 1 }, { unique: true });
+
 const DailyIncome = mongoose.model('DailyIncome', DailyIncomeSchema);
 
-// --- 3. BOT SETUP ---
+
+// 3. BOT AYARLARI
+const token = '***REMOVED***'; // Masaüstü uygulamasındaki token ile aynı olmalı
 const bot = new TelegramBot(token, { polling: true });
-const botStates = {}; // Stores conversation state per chat
 
-// --- 4. EMAIL TRANSPORTER ---
-const transporter = nodemailer.createTransport({
-    service: 'gmail',
-    auth: {
-      user: emailUser,
-      pass: emailPass
-    }
-});
-
-// --- 5. DATABASE CONNECTION ---
+// 4. MONGODB'YE BAĞLAN
 mongoose.connect(mongoURI)
   .then(() => console.log("✅ MongoDB Bağlantısı Başarılı!"))
-  .catch(err => console.error("❌ MongoDB Bağlantı Hatası:", err));
+  .catch(err => {
+    console.error("❌ MongoDB Bağlantı Hatası:", err);
+    console.log("HATA DETAYI:", err.message);
+  });
 
-// --- 6. HELPER FUNCTIONS ---
-function generateCaptcha() {
-    const num1 = Math.floor(Math.random() * 10) + 1;
-    const num2 = Math.floor(Math.random() * 10) + 1;
-    return {
-        question: `${num1} + ${num2} = ?`,
-        answer: (num1 + num2).toString()
-    };
-}
+// 5. BUTON TIKLAMALARINI DİNLE (Callback Query)
+bot.on('callback_query', async (query) => {
+  const { data, message, id } = query;
+  // Format: PAY:PaymentID:Date
+  const parts = data.split(':');
+  
+  if (parts.length < 3) return;
 
-function getTodayDateString() {
-    return new Date().toISOString().split('T')[0];
-}
+  const action = parts[0];
+  const paymentId = parts[1];
+  const date = parts.slice(2).join(':'); // Tarih bazen : içerebilir ama burada YYYY-MM-DD formatı bekliyoruz
 
-async function sendEmail(to, subject, text) {
-    const mailOptions = {
-        from: emailUser,
-        to: to,
-        subject: subject,
-        text: text
-    };
-    return transporter.sendMail(mailOptions);
-}
-
-// --- 7. BOT LOGIC ---
-
-// Command: /start
-bot.onText(/\/start (.+)/, async (msg, match) => {
-    const chatId = msg.chat.id;
-    const code = match[1];
-
+  if (action === 'PAY') {
     try {
-        const user = await User.findOne({ 
-            pairingCode: code, 
-            pairingCodeExpiresAt: { $gt: new Date() } 
-        });
+      const payment = await Payment.findById(paymentId);
+      if (payment) {
+        const installment = payment.installmentPlan.find(i => i.date === date);
+        if (installment && !installment.isPaid) {
+          installment.isPaid = true;
+          payment.markModified('installmentPlan');
+          await payment.save();
 
-        if (user) {
-            user.telegramChatId = chatId.toString();
-            user.pairingCode = undefined;
-            user.pairingCodeExpiresAt = undefined;
-            await user.save();
+          // Cevap ver (Toast mesajı)
+          await bot.answerCallbackQuery(id, { text: 'Ödemeniz başarıyla kaydedildi! ✅' });
 
-            // Update Settings
-            const settings = await Settings.findOne({ userId: user._id });
-            if (settings) {
-                settings.telegram.chatId = chatId.toString();
-                await settings.save();
-            } else {
-                await Settings.create({
-                    userId: user._id,
-                    telegram: { chatId: chatId.toString(), notificationsEnabled: true }
-                });
-            }
+          // Mesajı güncelle: Tıklanan butonu kaldır ve metne "Ödendi" ekle
+          const currentKeyboard = message.reply_markup.inline_keyboard;
+          // Tıklanan butonu filtrele (data eşleşmesine göre)
+          const newKeyboard = currentKeyboard.filter(row => row[0].callback_data !== data);
+          
+          let newText = message.text;
+          newText += `\n✅ ${payment.title} Ödendi`;
 
-            await bot.sendMessage(chatId, '✅ Hesabınız başarıyla eşleştirildi! Artık bildirimleri buradan alacaksınız.\n\nKomutlar:\n/gelirgider - Gelir/Gider Yönetimi\n/sifremiunuttum - Şifre Sıfırlama');
+          await bot.editMessageText(newText, {
+            chat_id: message.chat.id,
+            message_id: message.message_id,
+            parse_mode: 'HTML', 
+            reply_markup: { inline_keyboard: newKeyboard }
+          });
         } else {
-            await bot.sendMessage(chatId, '❌ Geçersiz veya süresi dolmuş eşleştirme kodu.');
+          await bot.answerCallbackQuery(id, { text: 'Bu taksit zaten ödenmiş veya bulunamadı.' });
         }
+      } else {
+         await bot.answerCallbackQuery(id, { text: 'Ödeme kaydı bulunamadı.' });
+      }
     } catch (error) {
-        console.error('Pairing Error:', error);
-        await bot.sendMessage(chatId, '⚠️ Bir hata oluştu.');
+      console.error('Callback Error:', error);
+      await bot.answerCallbackQuery(id, { text: 'İşlem sırasında bir hata oluştu.' });
     }
+  }
 });
 
-bot.onText(/\/start$/, async (msg) => {
-    const chatId = msg.chat.id;
-    await bot.sendMessage(chatId, '👋 Merhaba! Bu bot Ödeme Takip Sistemi ile entegre çalışır.\n\nEğer hesabınızı eşleştirmek istiyorsanız masaüstü uygulamasından aldığınız QR kodu veya bağlantıyı kullanın.\n\nMevcut Komutlar:\n/gelirgider - Gelir/Gider Ekleme ve Raporlar\n/sifremiunuttum - Şifre Sıfırlama');
-});
-
-// Command: /sifremiunuttum
-bot.onText(/\/sifremiunuttum/, async (msg) => {
-    const chatId = msg.chat.id;
-    botStates[chatId] = { step: 'FORGOT_EMAIL', data: {} };
-    await bot.sendMessage(chatId, '🔒 Şifre sıfırlama işlemi başlatıldı.\nLütfen sisteme kayıtlı <b>E-posta adresinizi</b> yazın:', { parse_mode: 'HTML' });
-});
-
-// Command: /gelirgider
-bot.onText(/\/gelirgider/, async (msg) => {
-    const chatId = msg.chat.id;
-    
-    // Check if user is paired
-    const user = await User.findOne({ telegramChatId: chatId.toString() });
-    if (!user) {
-        await bot.sendMessage(chatId, '⚠️ Bu özelliği kullanmak için önce hesabınızı eşleştirmeniz gerekmektedir.');
-        return;
-    }
-
-    const opts = {
-        reply_markup: {
-            inline_keyboard: [
-                [{ text: '➕ Gelir Ekle', callback_data: 'add_income' }, { text: '➖ Gider Ekle', callback_data: 'add_expense' }],
-                [{ text: '📊 Günlük Rapor', callback_data: 'report_daily' }, { text: '📈 Aylık Rapor', callback_data: 'report_monthly' }]
-            ]
-        }
-    };
-    await bot.sendMessage(chatId, '💰 <b>Gelir/Gider Yönetimi</b>\nLütfen bir işlem seçin:', { parse_mode: 'HTML', ...opts });
-});
-
-// Handle Callback Queries (Menu Buttons)
-bot.on('callback_query', async (callbackQuery) => {
-    const msg = callbackQuery.message;
-    const chatId = msg.chat.id;
-    const data = callbackQuery.data;
-
-    // Check User
-    const user = await User.findOne({ telegramChatId: chatId.toString() });
-    if (!user) return;
-
-    if (data === 'add_income') {
-        botStates[chatId] = { step: 'INCOME_TYPE', data: { type: 'income' } };
-        const opts = {
-            reply_markup: {
-                keyboard: [['Nakit', 'Kredi Kartı'], ['Maaş', 'Diğer'], ['İptal']],
-                resize_keyboard: true,
-                one_time_keyboard: true
-            }
-        };
-        await bot.sendMessage(chatId, '💵 Gelir türünü seçin:', opts);
-    } else if (data === 'add_expense') {
-        botStates[chatId] = { step: 'EXPENSE_AMOUNT', data: { type: 'expense' } };
-        await bot.sendMessage(chatId, '💸 Gider tutarını girin (TL):');
-    } else if (data === 'report_daily') {
-        await sendReport(chatId, user._id, 'daily');
-    } else if (data === 'report_monthly') {
-        await sendReport(chatId, user._id, 'monthly');
-    }
-
-    // Answer callback to remove loading state
-    bot.answerCallbackQuery(callbackQuery.id);
-});
-
-// Handle Text Messages (Conversation Flow)
+// 6. MESAJLARI DİNLE (Eşleşme ve Komutlar)
 bot.on('message', async (msg) => {
-    const chatId = msg.chat.id;
-    const text = msg.text;
+  const text = msg.text ? msg.text.trim() : '';
+  const chatId = msg.chat.id;
+  const lowerText = text.toLowerCase();
 
-    if (!text || text.startsWith('/')) return; // Ignore commands
+  console.log(`[Telegram] Mesaj alındı: ${text} (ChatID: ${chatId})`);
 
-    if (botStates[chatId]) {
-        const state = botStates[chatId];
-        const user = await User.findOne({ telegramChatId: chatId.toString() });
+  // EŞLEŞME KODU KONTROLÜ (5-6 haneli sayı)
+  if (/^\d{5,6}$/.test(text)) {
+    try {
+      // 1. Bu kodu bekleyen kullanıcıyı bul
+      const user = await User.findOne({ pairingCode: text });
 
-        if (text.toLowerCase() === 'iptal') {
-            delete botStates[chatId];
-            await bot.sendMessage(chatId, '🚫 İşlem iptal edildi.', { reply_markup: { remove_keyboard: true } });
-            return;
-        }
+      if (user) {
+        // 2. ChatID'yi Gmail hesabına MÜHÜRLE
+        user.telegramChatId = chatId.toString();
+        user.pairingCode = null; // Kodu imha et (güvenlik için)
+        await user.save();
 
-        // --- FORGOT PASSWORD FLOW ---
-        if (state.step === 'FORGOT_EMAIL') {
-            const email = text.trim();
-            const foundUser = await User.findOne({ email: new RegExp(`^${email}$`, 'i') });
-            
-            if (!foundUser) {
-                // Security: Don't reveal if email exists or not explicitly, but for UX we usually say "not found" or generic.
-                // User asked: "E-posta bilgisi verilse bile, e-posta adresi sistemde kayıtlı değilse herhangi bir bağlantı gönderilmemeli"
-                // So we will just say "İşlem devam ediyor..." and then do nothing if not found, or say "Kayıt bulunamadı".
-                // Let's be explicit for now as per "E-posta doğrulama süreci" request.
-                await bot.sendMessage(chatId, '❌ Bu e-posta adresi ile kayıtlı kullanıcı bulunamadı.');
-                delete botStates[chatId];
-                return;
-            }
-
-            state.data.userId = foundUser._id;
-            state.data.email = foundUser.email;
-            
-            // CAPTCHA
-            const captcha = generateCaptcha();
-            state.data.captchaAnswer = captcha.answer;
-            state.step = 'FORGOT_CAPTCHA';
-            
-            await bot.sendMessage(chatId, `🤖 Güvenlik Doğrulaması:\n\n<b>${captcha.question}</b>\n\nİşlemin sonucu nedir?`, { parse_mode: 'HTML' });
-
-        } else if (state.step === 'FORGOT_CAPTCHA') {
-            if (text.trim() === state.data.captchaAnswer) {
-                // Correct CAPTCHA
-                try {
-                    const code = Math.floor(100000 + Math.random() * 900000).toString();
-                    
-                    // Update User with Token
-                    await User.findByIdAndUpdate(state.data.userId, {
-                        resetIncomePasswordToken: code,
-                        resetIncomePasswordExpires: Date.now() + 3600000 * 24 // 24 hours
-                    });
-
-                    // Send Email
-                    const emailText = `Merhaba,\n\nŞifre sıfırlama talebiniz alındı.\n\nSıfırlama Kodu: ${code}\n\nBu kod 24 saat geçerlidir.`;
-                    await sendEmail(state.data.email, 'Şifre Sıfırlama Kodu', emailText);
-
-                    await bot.sendMessage(chatId, `✅ Doğrulama başarılı! Şifre sıfırlama kodu <b>${state.data.email}</b> adresine gönderildi.\nKod 24 saat geçerlidir.`, { parse_mode: 'HTML' });
-                } catch (err) {
-                    console.error('Email Send Error:', err);
-                    await bot.sendMessage(chatId, '❌ E-posta gönderilirken bir hata oluştu.');
-                }
-                delete botStates[chatId];
-            } else {
-                await bot.sendMessage(chatId, '❌ Yanlış cevap. Lütfen tekrar deneyin (/sifremiunuttum).');
-                delete botStates[chatId];
-            }
-        
-        // --- INCOME FLOW ---
-        } else if (state.step === 'INCOME_TYPE') {
-            state.data.incomeType = text; // Nakit, Kredi Kartı, Maaş, Diğer
-            state.step = 'INCOME_AMOUNT';
-            await bot.sendMessage(chatId, '💰 Gelir tutarını girin (TL):', { reply_markup: { remove_keyboard: true } });
-
-        } else if (state.step === 'INCOME_AMOUNT') {
-            const amount = parseFloat(text.replace(',', '.'));
-            if (isNaN(amount)) {
-                await bot.sendMessage(chatId, '❌ Geçerli bir sayı girin:');
-                return;
-            }
-            state.data.amount = amount;
-            
-            // Save Income
-            await saveDailyTransaction(user._id, {
-                type: 'income',
-                category: state.data.incomeType, // Map selection to field
-                amount: amount
-            });
-            
-            await bot.sendMessage(chatId, `✅ <b>Gelir Eklendi!</b>\nTür: ${state.data.incomeType}\nTutar: ${amount} TL`, { parse_mode: 'HTML' });
-            delete botStates[chatId];
-
-        // --- EXPENSE FLOW ---
-        } else if (state.step === 'EXPENSE_AMOUNT') {
-            const amount = parseFloat(text.replace(',', '.'));
-            if (isNaN(amount)) {
-                await bot.sendMessage(chatId, '❌ Geçerli bir sayı girin:');
-                return;
-            }
-            state.data.amount = amount;
-            state.step = 'EXPENSE_CATEGORY';
-            
-            const opts = {
-                reply_markup: {
-                    keyboard: [['Market', 'Yemek', 'Ulaşım'], ['Fatura', 'Sağlık', 'Eğlence'], ['Diğer']],
-                    resize_keyboard: true,
-                    one_time_keyboard: true
-                }
-            };
-            await bot.sendMessage(chatId, '📂 Kategori seçin:', opts);
-
-        } else if (state.step === 'EXPENSE_CATEGORY') {
-            state.data.category = text;
-            state.step = 'EXPENSE_DESC';
-            await bot.sendMessage(chatId, '📝 Açıklama girin (İsteğe bağlı, yoksa - koyun):', { reply_markup: { remove_keyboard: true } });
-
-        } else if (state.step === 'EXPENSE_DESC') {
-            state.data.description = text;
-            state.step = 'EXPENSE_METHOD';
-             const opts = {
-                reply_markup: {
-                    keyboard: [['Nakit', 'Kredi Kartı']],
-                    resize_keyboard: true,
-                    one_time_keyboard: true
-                }
-            };
-            await bot.sendMessage(chatId, '💳 Ödeme Yöntemi:', opts);
-
-        } else if (state.step === 'EXPENSE_METHOD') {
-            state.data.method = text === 'Kredi Kartı' ? 'cc' : 'cash';
-            
-            // Save Expense
-            await saveDailyTransaction(user._id, {
-                type: 'expense',
-                amount: state.data.amount,
-                category: state.data.category,
-                description: state.data.description,
-                method: state.data.method
-            });
-
-            await bot.sendMessage(chatId, `✅ <b>Gider Eklendi!</b>\nKategori: ${state.data.category}\nTutar: ${state.data.amount} TL\nÖdeme: ${text}`, { parse_mode: 'HTML' });
-            delete botStates[chatId];
-        }
-    }
-});
-
-// --- 8. DATA HELPERS ---
-async function saveDailyTransaction(userId, data) {
-    const today = getTodayDateString();
-    let daily = await DailyIncome.findOne({ userId, date: today });
-
-    if (!daily) {
-        daily = new DailyIncome({ userId, date: today });
-    }
-
-    if (data.type === 'income') {
-        // Map simplified income types to schema fields
-        // 'Nakit', 'Kredi Kartı', 'Maaş', 'Diğer'
-        if (data.category === 'Nakit') daily.cash = (daily.cash || 0) + data.amount;
-        else if (data.category === 'Kredi Kartı') daily.cc = (daily.cc || 0) + data.amount;
-        else if (data.category === 'Maaş') daily.salary = (daily.salary || 0) + data.amount;
-        else daily.other = (daily.other || 0) + data.amount;
-    } else if (data.type === 'expense') {
-        daily.expenses.push({
-            id: crypto.randomUUID(),
-            description: data.description,
-            amount: data.amount,
-            category: data.category,
-            method: data.method,
-            createdAt: new Date()
-        });
-    }
-
-    await daily.save();
-}
-
-async function sendReport(chatId, userId, type) {
-    const today = getTodayDateString();
-    let text = '';
-
-    if (type === 'daily') {
-        const daily = await DailyIncome.findOne({ userId, date: today });
-        if (!daily) {
-            text = '📅 Bugün için henüz kayıt bulunmamaktadır.';
-        } else {
-            const totalIncome = (daily.cash || 0) + (daily.cc || 0) + (daily.salary || 0) + (daily.other || 0);
-            const totalExpense = daily.expenses.reduce((sum, e) => sum + e.amount, 0);
-            
-            text = `📊 <b>GÜNLÜK RAPOR (${today})</b>\n\n` +
-                   `➕ <b>Gelirler:</b>\n` +
-                   `   Nakit: ${daily.cash || 0} TL\n` +
-                   `   Maaş: ${daily.salary || 0} TL\n` +
-                   `   Diğer: ${daily.other || 0} TL\n` +
-                   `   <b>Toplam Gelir: ${totalIncome} TL</b>\n\n` +
-                   `➖ <b>Giderler:</b>\n` +
-                   `   Adet: ${daily.expenses.length}\n` +
-                   `   <b>Toplam Gider: ${totalExpense} TL</b>\n\n` +
-                   `💰 <b>Net Durum: ${totalIncome - totalExpense} TL</b>`;
-        }
-    } else if (type === 'monthly') {
-        // Simple monthly summary (current month)
-        const startOfMonth = today.substring(0, 7) + '-01';
-        const docs = await DailyIncome.find({ 
-            userId, 
-            date: { $gte: startOfMonth } 
-        });
-
-        let totalIncome = 0;
-        let totalExpense = 0;
-
-        docs.forEach(doc => {
-            totalIncome += (doc.cash || 0) + (doc.cc || 0) + (doc.salary || 0) + (doc.other || 0);
-            totalExpense += doc.expenses.reduce((sum, e) => sum + e.amount, 0);
-        });
-
-        text = `📈 <b>AYLIK RAPOR (${today.substring(0, 7)})</b>\n\n` +
-               `➕ Toplam Gelir: ${totalIncome} TL\n` +
-               `➖ Toplam Gider: ${totalExpense} TL\n` +
-               `💰 <b>Net Durum: ${totalIncome - totalExpense} TL</b>`;
-    }
-
-    await bot.sendMessage(chatId, text, { parse_mode: 'HTML' });
-}
-
-// --- 9. SCHEDULED JOBS ---
-// Her ayın 1'inde saat 09:00'da aylık rapor gönder
-schedule.scheduleJob('0 9 1 * *', async () => {
-    const users = await User.find({ telegramChatId: { $exists: true } });
-    for (const user of users) {
+        // Ayarları da güncelle
         try {
-            await sendReport(user.telegramChatId, user._id, 'monthly');
-        } catch (e) {
-            console.error(`Auto report error for user ${user.email}:`, e);
+          let settings = await Settings.findOne({ userId: user._id });
+          if (settings) {
+            settings.telegram.chatId = chatId.toString();
+            await settings.save();
+          } else {
+             // Ayar yoksa oluştur
+             await Settings.create({ 
+               userId: user._id, 
+               telegram: { chatId: chatId.toString(), notificationsEnabled: true } 
+             });
+          }
+        } catch (settingsErr) {
+          console.error("Settings update error:", settingsErr);
         }
+
+        bot.sendMessage(chatId, `✅ Selam ${user.email}!\n\nHesabın başarıyla bağlandı. Artık masaüstü uygulaman kapalı olsa bile ödeme hatırlatmaların buraya gelecek.`);
+        console.log(`Kullanıcı eşleşti: ${user.email} (ChatID: ${chatId})`);
+      } else {
+        bot.sendMessage(chatId, "❌ Geçersiz veya süresi dolmuş kod. Lütfen uygulamadaki 'Ayarlar' kısmından yeni bir kod al.");
+      }
+    } catch (err) {
+      console.error('Eşleşme Hatası:', err);
+      bot.sendMessage(chatId, "⚠️ Bir hata oluştu, lütfen daha sonra dene.");
     }
+  } 
+  // KOMUTLAR: /start
+  else if (lowerText === '/start') {
+    bot.sendMessage(chatId, '👋 Merhaba! Ödeme Takip Sistemi ile eşleşmek için masaüstü uygulamasındaki "Ayarlar" bölümünden aldığın 5-6 haneli kodu buraya yaz.');
+  }
+  // KOMUTLAR: ödemelerim / payments
+  else if (lowerText === 'ödemelerim' || lowerText === 'payments') {
+    try {
+      console.log(`[Telegram] 'ödemelerim' komutu işleniyor... ChatID: ${chatId}`);
+      
+      const user = await User.findOne({ telegramChatId: chatId.toString() });
+      
+      if (!user) {
+        await bot.sendMessage(chatId, '❌ Bu Telegram hesabı ile eşleşmiş bir kullanıcı bulunamadı. Lütfen uygulamadan eşleştirme yapın.');
+        return;
+      }
+
+      // Ödemeleri getir
+      const payments = await Payment.find({ userId: user._id });
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      const upcomingPayments = payments.flatMap(p => 
+        p.installmentPlan
+          .filter(inst => !inst.isPaid)
+          .map(inst => ({ ...inst, paymentTitle: p.title, type: p.type, paymentId: p._id }))
+      ).sort((a, b) => new Date(a.date) - new Date(b.date));
+
+      if (upcomingPayments.length === 0) {
+         await bot.sendMessage(chatId, '🎉 Harika! Hiç ödenmemiş borcunuz bulunmuyor.');
+         return;
+      }
+
+      // Özet Mesaj Oluştur
+      const totalAmount = upcomingPayments.reduce((sum, p) => sum + p.amount, 0);
+      
+      let messageText = `📋 <b>Ödeme Listesi</b>\n\nToplam <b>${upcomingPayments.length}</b> adet ödenmemiş borcunuz var.\n\n`;
+      const inlineKeyboard = [];
+
+      // İlk 15 ödemeyi göster
+      upcomingPayments.slice(0, 15).forEach((p) => {
+          const dateStr = new Date(p.date).toLocaleDateString('tr-TR');
+          const instDate = new Date(p.date);
+          instDate.setHours(0, 0, 0, 0);
+          const diffTime = instDate - today;
+          const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+          
+          let dayText = '';
+          if (diffDays < 0) dayText = ` (⚠️ ${Math.abs(diffDays)} gün gecikti)`;
+          else if (diffDays === 0) dayText = ' (BUGÜN)';
+          else if (diffDays === 1) dayText = ' (Yarın)';
+          else dayText = ` (${diffDays} gün kaldı)`;
+
+          messageText += `▪️ <b>${p.paymentTitle}</b> - ${p.amount.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL - ${dateStr}${dayText}\n`;
+          
+          // Öde Butonu Ekle
+          inlineKeyboard.push([{
+            text: `✅ Öde: ${p.paymentTitle} (${p.amount.toLocaleString('tr-TR')} TL)`,
+            callback_data: `PAY:${p.paymentId}:${p.date}`
+          }]);
+      });
+
+      if (upcomingPayments.length > 15) {
+          messageText += `\n<i>...ve ${upcomingPayments.length - 15} diğer ödeme.</i>`;
+      }
+
+      messageText += `\nToplam Borç: <b>${totalAmount.toLocaleString('tr-TR', { style: 'currency', currency: 'TRY' })}</b>`;
+
+      await bot.sendMessage(chatId, messageText, { 
+          parse_mode: 'HTML',
+          reply_markup: { inline_keyboard: inlineKeyboard }
+      });
+
+    } catch (error) {
+      console.error('Telegram Komut Hatası:', error);
+      await bot.sendMessage(chatId, '⚠️ Bir hata oluştu. Lütfen daha sonra tekrar deneyiniz.');
+    }
+  }
 });
 
-console.log('🤖 Bot başarıyla başlatıldı!');
+// 7. GÜNLÜK KONTROL FONKSİYONU (Kalıcı Hafızadan Okuma)
+async function checkAndSendReminders() {
+  console.log('🔄 Ödeme kontrolleri yapılıyor...');
+  try {
+    // ChatID'si olan tüm kullanıcıları bul
+    const usersWithChatId = await User.find({ 
+      telegramChatId: { $exists: true, $ne: null } 
+    });
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const todayStr = today.toISOString().split('T')[0];
+
+    for (const user of usersWithChatId) {
+      const { telegramChatId, _id: userId, email } = user;
+      
+      // Ayarları kontrol et
+      let settings = await Settings.findOne({ userId });
+      
+      // Bildirimler kapalıysa atla
+      if (settings && settings.telegram && settings.telegram.notificationsEnabled === false) {
+        continue;
+      }
+      
+      // Bugün zaten bildirim gittiyse atla
+      if (settings && settings.lastTelegramNotification === todayStr) {
+          console.log(`User ${email} için bugün zaten bildirim atıldı.`);
+          continue;
+      }
+
+      // Ödemeleri getir
+      const payments = await Payment.find({ userId });
+      
+      // Yaklaşan ödemeleri filtrele (0-3 gün)
+      const upcomingPayments = payments.flatMap(p => 
+        p.installmentPlan
+          .filter(inst => !inst.isPaid)
+          .map(inst => ({ ...inst, paymentTitle: p.title, type: p.type, paymentId: p._id }))
+      ).filter(inst => {
+        const instDate = new Date(inst.date);
+        instDate.setHours(0, 0, 0, 0);
+        
+        const diffTime = instDate - today;
+        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+        
+        return diffDays >= 0 && diffDays <= 3;
+      });
+
+      if (upcomingPayments.length > 0) {
+        const totalAmount = upcomingPayments.reduce((sum, p) => sum + p.amount, 0);
+        
+        // GRUPLANDIRILMIŞ MESAJ OLUŞTUR
+        let messageText = `📢 <b>Ödeme Hatırlatıcı</b>\n\nSayın ${email}, yaklaşan <b>${upcomingPayments.length}</b> adet ödemeniz var (Son 3 gün).\n\n`;
+        const inlineKeyboard = [];
+
+        upcomingPayments.slice(0, 10).forEach(p => {
+          const dateStr = new Date(p.date).toLocaleDateString('tr-TR');
+          const instDate = new Date(p.date);
+          instDate.setHours(0, 0, 0, 0);
+          const diffTime = instDate - today;
+          const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+          
+          let dayText = '';
+          if (diffDays === 0) dayText = ' (BUGÜN)';
+          else if (diffDays === 1) dayText = ' (Yarın)';
+          else dayText = ` (${diffDays} gün kaldı)`;
+
+          messageText += `▪️ <b>${p.paymentTitle}</b> - ${p.amount.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL - ${dateStr}${dayText}\n`;
+          
+          // Buton ekle
+          inlineKeyboard.push([{
+            text: `✅ Öde: ${p.paymentTitle} (${p.amount.toLocaleString('tr-TR')} TL)`,
+            callback_data: `PAY:${p.paymentId}:${p.date}`
+          }]);
+        });
+        
+        if (upcomingPayments.length > 10) {
+           messageText += `\n<i>...ve ${upcomingPayments.length - 10} diğer ödeme.</i>`;
+        }
+
+        messageText += `\nToplam Tutar: <b>${totalAmount.toLocaleString('tr-TR', { style: 'currency', currency: 'TRY' })}</b>\n\nÖdeme yapmak için butonları kullanabilirsiniz.`;
+        
+        try {
+          await bot.sendMessage(telegramChatId, messageText, { 
+              parse_mode: 'HTML',
+              reply_markup: { inline_keyboard: inlineKeyboard }
+          });
+          console.log(`✅ Bildirim gönderildi: ${email}`);
+          
+          // Son bildirim tarihini güncelle
+          if (settings) {
+            settings.lastTelegramNotification = todayStr;
+            await settings.save();
+          } else {
+             await Settings.create({ userId, lastTelegramNotification: todayStr });
+          }
+        } catch (error) {
+          console.error(`❌ Bildirim gönderme hatası (${email}):`, error.message);
+        }
+      }
+    }
+  } catch (error) {
+    console.error('Genel Kontrol Hatası:', error);
+  }
+}
+
+// 8. ZAMANLAYICI (Her gün 09:00, 12:00 ve 14:00'te çalışır)
+schedule.scheduleJob('0 9,12,14 * * *', () => {
+  console.log('⏰ Otomatik Kontrol (09/12/14) çalışıyor...');
+  checkAndSendReminders();
+});
+
+// 9. OTOMATİK YEDEKLEME (Her gece 00:00'da)
+schedule.scheduleJob('0 0 * * *', async () => {
+  console.log('📦 Otomatik Yedekleme Başlatılıyor...');
+  try {
+    const users = await User.find({ telegramChatId: { $exists: true, $ne: null } });
+
+    for (const user of users) {
+      try {
+        const userId = user._id;
+        const chatId = user.telegramChatId;
+
+        // Kullanıcıya ait tüm verileri çek
+        const [userData, payments, settings, dailyIncomes] = await Promise.all([
+          User.findById(userId).lean(),
+          Payment.find({ userId }).lean(),
+          Settings.findOne({ userId }).lean(),
+          DailyIncome.find({ userId }).lean()
+        ]);
+
+        const backupData = {
+          timestamp: new Date().toISOString(),
+          user: userData,
+          settings: settings,
+          payments: payments,
+          dailyIncomes: dailyIncomes
+        };
+
+        const jsonString = JSON.stringify(backupData, null, 2);
+        const buffer = Buffer.from(jsonString, 'utf-8');
+
+        const fileName = `Yedek_${user.email}_${new Date().toISOString().split('T')[0]}.json`;
+
+        await bot.sendDocument(chatId, buffer, {
+          caption: `📅 Günlük Otomatik Veri Yedeği (${new Date().toLocaleDateString('tr-TR')})\n\nBu dosya tüm verilerinizi içerir.`
+        }, {
+          filename: fileName,
+          contentType: 'application/json'
+        });
+
+        console.log(`✅ Yedek gönderildi: ${user.email}`);
+      } catch (err) {
+        console.error(`❌ Yedekleme hatası (${user.email}):`, err);
+      }
+    }
+  } catch (globalErr) {
+    console.error('Genel Yedekleme Hatası:', globalErr);
+  }
+});
+
+// 10. HTTP SUNUCUSU (Render Health Check)
+const PORT = process.env.PORT || 3000;
+http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.write('Odeme Takip Botu Calisiyor!');
+  res.end();
+}).listen(PORT, () => {
+  console.log(`🌐 HTTP Sunucusu ${PORT} portunda dinleniyor.`);
+});
+
+// Hata yakalama
+bot.on('polling_error', (error) => {
+  console.log(`[Polling Error] ${error.code}: ${error.message}`);
+});
+
+console.log("🚀 Bot başlatıldı ve dinlemeye geçti...");
