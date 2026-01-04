@@ -3,6 +3,7 @@ const mongoose = require('mongoose');
 const schedule = require('node-schedule');
 const http = require('http');
 const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
 
 // 1. MONGODB BAĞLANTISI
 const mongoURI = 'mongodb+srv://yehsqn:yehsan1907efe42pbag10kdb17@cluster0.cbct0mv.mongodb.net/OdemeTakipDB?retryWrites=true&w=majority';
@@ -472,8 +473,18 @@ schedule.scheduleJob('* * * * *', async () => {
           dailyIncomes: dailyIncomes
         };
 
-        const jsonString = JSON.stringify(backupData, null, 2);
-        const buffer = Buffer.from(jsonString, 'utf-8');
+        // Calculate Checksum (SHA-256) for data integrity
+        const jsonString = JSON.stringify(backupData);
+        const checksum = crypto.createHash('sha256').update(jsonString).digest('hex');
+        
+        // Add checksum to the final object
+        const finalBackup = {
+            ...backupData,
+            checksum
+        };
+
+        const finalJsonString = JSON.stringify(finalBackup, null, 2);
+        const buffer = Buffer.from(finalJsonString, 'utf-8');
 
         const fileName = `Yedek_${user.email}_${new Date().toISOString().split('T')[0]}.json`;
 

@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",
+    "crypto": "^1.0.1",
     "date-fns": "^2.30.0",
     "mongoose": "^7.0.0",
     "node-schedule": "^2.1.1",
