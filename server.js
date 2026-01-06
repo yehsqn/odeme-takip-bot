@@ -30,52 +30,91 @@ const bot = new TelegramBot(BOT_TOKEN, { polling: false }); // No polling needed
 async function performBackupForUser(userId, chatId, email) {
     console.log(`[BACKUP] Starting backup for user: ${email} (${userId})`);
     
+    // Use /tmp for Render compatibility (ephemeral storage)
+    const tempDir = '/tmp'; // Render writable path
+    const fileName = `Yedek_${email}_${new Date().toISOString().slice(0, 10)}.json`;
+    const filePath = path.join(tempDir, fileName);
+
     try {
-        // 1. Fetch Data
-        const payments = await Payment.find({ userId }).lean();
-        const dailyIncomes = await DailyIncome.find({ userId }).lean();
-        const settings = await Settings.findOne({ userId }).lean();
-        
-        // 2. Prepare JSON
-        const backupData = {
-            date: new Date().toISOString(),
-            user: { email, userId },
-            payments,
-            dailyIncomes,
-            settings,
-            source: 'Render Server Backup'
-        };
-        
-        const jsonString = JSON.stringify(backupData, null, 2);
-        
-        // 3. Create Temporary File
-        // Ensure /tmp exists (it does on Render/Linux)
-        const tempDir = path.join(__dirname, 'temp_backups');
-        if (!fs.existsSync(tempDir)) {
-            fs.mkdirSync(tempDir);
+        // Ensure connection is active
+        if (mongoose.connection.readyState !== 1) {
+            console.log('[DB] Reconnecting...');
+            await mongoose.connect(MONGO_URI);
         }
+
+        // 1. Create Write Stream
+        if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
+        const writeStream = fs.createWriteStream(filePath, { encoding: 'utf8' });
+
+        // 2. Fetch Data & Write to Stream (Memory Efficient)
+        // We write manually to construct a valid JSON object without loading everything into RAM
         
-        const fileName = `Yedek_${email}_${new Date().toISOString().slice(0, 10)}.json`;
-        const filePath = path.join(tempDir, fileName);
+        writeStream.write('{\n');
+        writeStream.write(`  "date": "${new Date().toISOString()}",\n`);
+        writeStream.write(`  "user": { "email": "${email}", "userId": "${userId}" },\n`);
+        writeStream.write(`  "source": "Render Server Backup",\n`);
+
+        // Settings
+        const settings = await Settings.findOne({ userId }).lean();
+        writeStream.write(`  "settings": ${JSON.stringify(settings || {})},\n`);
+
+        // Payments (Streaming array)
+        writeStream.write(`  "payments": [`);
+        const paymentCursor = Payment.find({ userId }).lean().cursor();
+        let isFirstPayment = true;
+        for await (const doc of paymentCursor) {
+            if (!isFirstPayment) writeStream.write(',');
+            writeStream.write(JSON.stringify(doc));
+            isFirstPayment = false;
+        }
+        writeStream.write(`],\n`);
+
+        // Daily Incomes (Streaming array)
+        writeStream.write(`  "dailyIncomes": [`);
+        const incomeCursor = DailyIncome.find({ userId }).lean().cursor();
+        let isFirstIncome = true;
+        for await (const doc of incomeCursor) {
+            if (!isFirstIncome) writeStream.write(',');
+            writeStream.write(JSON.stringify(doc));
+            isFirstIncome = false;
+        }
+        writeStream.write(`]\n`);
+
+        writeStream.write('}');
+        writeStream.end();
+
+        // Wait for stream to finish
+        await new Promise((resolve, reject) => {
+            writeStream.on('finish', resolve);
+            writeStream.on('error', reject);
+        });
+
+        console.log(`[BACKUP] File created via stream: ${filePath}`);
         
-        fs.writeFileSync(filePath, jsonString);
-        console.log(`[BACKUP] File created: ${filePath}`);
-        
-        // 4. Send via Telegram
+        // 3. Send via Telegram
         await bot.sendDocument(chatId, filePath, {
-            caption: `📦 <b>Otomatik Sunucu Yedeği</b>\n\n📅 Tarih: ${new Date().toLocaleString('tr-TR')}\n✅ Verileriniz sunucu tarafından otomatik olarak yedeklendi.`,
+            caption: `📦 <b>Otomatik Sunucu Yedeği</b>\n\n📅 Tarih: ${new Date().toLocaleString('tr-TR')}\n✅ Verileriniz güvenle yedeklendi.`,
             parse_mode: 'HTML'
         });
         
         console.log(`[BACKUP] Sent to Telegram user ${chatId}`);
         
-        // 5. Cleanup
+        // 4. Cleanup
         fs.unlinkSync(filePath);
         console.log(`[BACKUP] Temp file deleted.`);
         
     } catch (error) {
         console.error(`[BACKUP ERROR] Failed for user ${email}:`, error);
-        // Optional: Send error message to user?
+        
+        // Send Error Notification to User
+        try {
+            await bot.sendMessage(chatId, `⚠️ <b>Yedekleme Başarısız Oldu</b>\n\nSunucuda bir hata oluştu: <i>${error.message}</i>\nLütfen daha sonra tekrar deneyin.`, { parse_mode: 'HTML' });
+        } catch (sendErr) {
+            console.error('[BACKUP] Failed to send error notification:', sendErr);
+        }
+
+        // Cleanup if exists
+        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
     }
 }
 
@@ -83,19 +122,20 @@ async function performBackupForUser(userId, chatId, email) {
 // Runs every minute to check if any user scheduled a backup for "now"
 async function checkAndRunBackups() {
     const now = new Date();
-    // Format: "HH:mm" (e.g., "14:05")
-    // Note: Render servers are usually UTC. We need to handle timezone.
-    // The user sets time in their local time (TRT = UTC+3).
-    // So if user says "23:00", it means 20:00 UTC.
-    // However, to be safe, let's assume the stored time is what they see.
-    // We should convert current server time to TRT to compare.
     
-    const trtNow = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Istanbul' }));
-    const currentHour = String(trtNow.getHours()).padStart(2, '0');
-    const currentMinute = String(trtNow.getMinutes()).padStart(2, '0');
-    const currentTimeStr = `${currentHour}:${currentMinute}`;
+    // Explicitly handle TRT Timezone (UTC+3)
+    // Intl.DateTimeFormat is reliable across Node versions
+    const formatter = new Intl.DateTimeFormat('tr-TR', {
+        timeZone: 'Europe/Istanbul',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false
+    });
     
-    console.log(`[CRON] Checking backups for time: ${currentTimeStr} (TRT)`);
+    // Returns "HH:mm"
+    const currentTimeStr = formatter.format(now);
+    
+    console.log(`[CRON] Checking backups for time: ${currentTimeStr} (TRT) [Server UTC: ${now.toISOString()}]`);
     
     try {
         // Find users who have backup enabled AND match the current time
@@ -103,6 +143,7 @@ async function checkAndRunBackups() {
         
         // We need to join Users with Settings to get chatId
         // 1. Find all settings with enabled backup and matching time
+        // FIX: Also check for userIds stored as Strings and ObjectIds just in case
         const settingsList = await Settings.find({
             'backup.enabled': true,
             'backup.time': currentTimeStr
@@ -112,11 +153,18 @@ async function checkAndRunBackups() {
             console.log(`[CRON] Found ${settingsList.length} users scheduled for backup.`);
             
             for (const setting of settingsList) {
-                const user = await User.findById(setting.userId).lean();
+                // Find user by Mixed type (ObjectId or String)
+                const user = await User.findOne({ 
+                    $or: [
+                        { _id: setting.userId },
+                        { _id: new mongoose.Types.ObjectId(setting.userId) }
+                    ]
+                }).lean();
+
                 if (user && user.telegramChatId) {
-                    await performBackupForUser(user._id, user.telegramChatId, user.email);
+                    await performBackupForUser(setting.userId, user.telegramChatId, user.email);
                 } else {
-                    console.log(`[CRON] User or Telegram ID missing for setting ${setting._id}`);
+                    console.log(`[CRON] User or Telegram ID missing for setting ${setting._id} (User ID: ${setting.userId})`);
                 }
             }
         }
