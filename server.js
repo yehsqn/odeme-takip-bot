@@ -1,4 +1,4 @@
-const mongoose = require('mongoose');
+﻿const mongoose = require('mongoose');
 const cron = require('node-cron');
 const fs = require('fs');
 const path = require('path');
@@ -93,7 +93,7 @@ async function performBackupForUser(userId, chatId, email) {
 
         // 3. Send via Telegram
         await bot.sendDocument(chatId, filePath, {
-            caption: `📦 <b>Otomatik Sunucu Yedeği</b>\n\n📅 Tarih: ${new Date().toLocaleString('tr-TR')}\n✅ Verileriniz güvenle yedeklendi.`,
+            caption: `ğŸ“¦ <b>Otomatik Sunucu YedeÄŸi</b>\n\nğŸ“… Tarih: ${new Date().toLocaleString('tr-TR')}\nâœ… Verileriniz gÃ¼venle yedeklendi.`,
             parse_mode: 'HTML'
         });
 
@@ -108,7 +108,7 @@ async function performBackupForUser(userId, chatId, email) {
 
         // Send Error Notification to User
         try {
-            await bot.sendMessage(chatId, `⚠️ <b>Yedekleme Başarısız Oldu</b>\n\nSunucuda bir hata oluştu: <i>${error.message}</i>\nLütfen daha sonra tekrar deneyin.`, { parse_mode: 'HTML' });
+            await bot.sendMessage(chatId, `âš ï¸ <b>Yedekleme BaÅŸarÄ±sÄ±z Oldu</b>\n\nSunucuda bir hata oluÅŸtu: <i>${error.message}</i>\nLÃ¼tfen daha sonra tekrar deneyin.`, { parse_mode: 'HTML' });
         } catch (sendErr) {
             console.error('[BACKUP] Failed to send error notification:', sendErr);
         }
@@ -178,7 +178,7 @@ async function checkAndRunBackups() {
 async function startServer() {
     try {
         await mongoose.connect(MONGO_URI);
-        console.log('✅ Connected to MongoDB');
+        console.log('âœ… Connected to MongoDB');
 
         // Run an immediate check on startup to verify everything works
         console.log('[STARTUP] Running initial backup check...');
@@ -186,7 +186,7 @@ async function startServer() {
 
         // Schedule the check every minute
         cron.schedule('* * * * *', checkAndRunBackups);
-        console.log('⏰ Backup Scheduler Started (Running every minute)');
+        console.log('â° Backup Scheduler Started (Running every minute)');
 
         // Keep process alive with HTTP server for Render health checks
         const http = require('http');
@@ -248,4 +248,5 @@ async function startServer() {
 }
 
 startServer();
+
 
