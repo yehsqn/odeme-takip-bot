@@ -1,17 +1,31 @@
 {
-  "name": "odeme-takip-bot",
-  "version": "1.1.30",
-  "description": "Coklu kullanicili odeme takip asistani",
-  "main": "bot.js",
+  "name": "odeme-takip-api",
+  "version": "1.0.0",
+  "description": "Ödeme Takip REST API — Mobile backend",
+  "main": "index.js",
   "scripts": {
-    "start": "node bot.js"
+    "start": "node index.js",
+    "dev": "nodemon index.js"
   },
   "dependencies": {
+    "@libsql/client": "^0.17.2",
     "axios": "^1.6.0",
-    "bcryptjs": "^3.0.3",
-    "date-fns": "^2.30.0",
-    "mongoose": "^7.0.0",
-    "node-schedule": "^2.1.1",
-    "node-telegram-bot-api": "^0.61.0"
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.0.0",
+    "express": "^4.18.0",
+    "express-rate-limit": "^7.0.0",
+    "google-auth-library": "^10.6.2",
+    "node-cron": "^3.0.3",
+    "node-telegram-bot-api": "^0.66.0",
+    "nodemailer": "^10.0.10",
+    "resend": "^6.27.0",
+    "ws": "^8.21.3"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
