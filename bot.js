@@ -1,8 +1,3 @@
-// Render veya bağımsız ortam doğrudan `node bot.js` çalıştırırsa API sunucusunu başlat
-if (require.main === module) {
-  require('./index.js');
-  return;
-}
 
 const path = require('path');
 require('dotenv').config({ path: path.resolve(__dirname, '.env') });
@@ -1096,3 +1091,8 @@ function getBot() {
 }
 
 module.exports = { initTelegramBot, getBot };
+
+// Render doğrudan `node bot.js` çalıştırırsa API sunucusunu başlat
+if (require.main === module) {
+  require('./index.js');
+}
