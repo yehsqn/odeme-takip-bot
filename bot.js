@@ -83,8 +83,9 @@ function initTelegramBot() {
     console.log('🤖 [BOT] PayPulse Telegram Botu başarıyla başlatıldı (Polling aktif).');
 
     // ── Keep-Alive: Render'ın botu uyutmasını engelle ────────────────────────
-    // Her 14 dakikada bir kendi sunucusuna ping atar
-    const KEEP_ALIVE_URL = process.env.VITE_API_URL || process.env.RENDER_EXTERNAL_URL;
+    // Render Free tier 15 dakikada uyur. Dış URL'ye her 9-10 dakikada bir istek atar.
+    const isProduction = process.env.NODE_ENV === 'production' || process.env.RENDER === 'true' || Boolean(process.env.RENDER_EXTERNAL_URL);
+    const KEEP_ALIVE_URL = process.env.KEEP_ALIVE_URL || process.env.RENDER_EXTERNAL_URL || process.env.VITE_API_URL || (isProduction ? 'https://odeme-takip-bot.onrender.com' : null);
     if (KEEP_ALIVE_URL) {
       const https = require('https');
       const http = require('http');
@@ -100,7 +101,7 @@ function initTelegramBot() {
         } catch (e) {
           console.warn('[BOT KEEP-ALIVE] URL hatası:', e.message);
         }
-      }, 14 * 60 * 1000); // 14 dakika
+      }, 9 * 60 * 1000); // 9 dakika (15 dk limitinden önce)
       console.log('[BOT] Keep-alive aktif →', KEEP_ALIVE_URL);
     }
 
