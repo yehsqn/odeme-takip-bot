@@ -1,8 +1,8 @@
 const { createClient } = require('@libsql/client');
 
 const db = createClient({
-  url: process.env.TURSO_DATABASE_URL || 'libsql://odeme-takip-yehsqn.aws-ap-northeast-1.turso.io',
-  authToken: process.env.TURSO_AUTH_TOKEN || 'eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhIjoicnciLCJnaWQiOiIxODE1MGVhZi03N2JjLTQ4ZmQtYTkyMi01NTIyZGE0MjgzYzEiLCJpYXQiOjE3NzYwMjMyOTYsInJpZCI6ImM3ZTRhMTUyLTUyYzUtNDExNy05MGYwLTA3YmQ5MjM2N2I2OCJ9.wdMNsozpY2wuzi1g3GPCekUnuN2F30RnXmKYJE5yyHZskpCHwpOYyMxvqNatv5HGzA3RyPpkPFLOSkwKChWBDQ',
+  url: process.env.TURSO_DATABASE_URL || '',
+  authToken: process.env.TURSO_AUTH_TOKEN || '',
 });
 
 async function initDb() {
@@ -148,6 +148,20 @@ async function initDb() {
     // Profil indeksleri
     `CREATE INDEX IF NOT EXISTS idx_individual_profiles_user ON individual_profiles(user_id)`,
     `CREATE INDEX IF NOT EXISTS idx_corporate_profiles_user ON corporate_profiles(user_id)`,
+
+    // ── Geri Bildirim ve Hata Bildirimleri Tablosu ─────────────
+    `CREATE TABLE IF NOT EXISTS feedbacks (
+      id          TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(12)))),
+      user_id     TEXT,
+      user_email  TEXT,
+      type        TEXT DEFAULT 'feedback',
+      subject     TEXT,
+      message     TEXT NOT NULL,
+      app_version TEXT,
+      platform    TEXT,
+      created_at  TEXT DEFAULT (datetime('now'))
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_feedbacks_user ON feedbacks(user_id)`,
   ]);
 
   // Migration: Mevcut DB'ye yeni sütunlar ekle (varsa atlar)
