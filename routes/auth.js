@@ -210,18 +210,101 @@ router.get('/premium/:id', async (req, res) => {
   }
 });
 
+// Helper: JWT payload decode without signature verification (for debug & audience inspection)
+function decodeJwtPayload(jwtToken) {
+  try {
+    if (!jwtToken || typeof jwtToken !== 'string') return null;
+    const parts = jwtToken.split('.');
+    if (parts.length < 2) return null;
+    let base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    while (base64.length % 4) {
+      base64 += '=';
+    }
+    const jsonStr = Buffer.from(base64, 'base64').toString('utf8');
+    return JSON.parse(jsonStr);
+  } catch {
+    return null;
+  }
+}
+
+// Helper: Collect all valid Google OAuth Client IDs (audiences)
+function getAllowedGoogleAudiences() {
+  const audiences = [
+    process.env.GOOGLE_WEB_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.VITE_GOOGLE_CLIENT_ID,
+    '786955286273-agdl3o6n9h87iptl618knpd0k2e4mbrb.apps.googleusercontent.com',
+    '214147261440-rmmia8qnauqmbo4pm382nejch7ddh99t.apps.googleusercontent.com'
+  ];
+
+  if (process.env.GOOGLE_IOS_CLIENT_ID) {
+    audiences.push(process.env.GOOGLE_IOS_CLIENT_ID);
+  }
+
+  if (process.env.GOOGLE_AUDIENCES) {
+    const extras = process.env.GOOGLE_AUDIENCES.split(',').map(s => s.trim()).filter(Boolean);
+    audiences.push(...extras);
+  }
+
+  return Array.from(new Set(audiences.filter(Boolean)));
+}
+
 // POST /api/auth/google
 router.post('/google', async (req, res) => {
   try {
-    const { credential } = req.body;
-    if (!credential) return res.status(400).json({ success: false, error: 'Google token gerekli' });
+    const { credential, accessToken } = req.body;
+    if (!credential && !accessToken) return res.status(400).json({ success: false, error: 'Google token gerekli' });
 
-    const clientId = process.env.GOOGLE_CLIENT_ID || '214147261440-rmmia8qnauqmbo4pm382nejch7ddh99t.apps.googleusercontent.com';
-    const ticket = await googleClient.verifyIdToken({
-      idToken: credential,
-      audience: clientId,
-    });
-    const payload = ticket.getPayload();
+    const validAudiences = getAllowedGoogleAudiences();
+    let payload;
+    if (credential) {
+      // Native (Android/iOS) akış: ID token
+      try {
+        const ticket = await googleClient.verifyIdToken({
+          idToken: credential,
+          audience: validAudiences
+        });
+        payload = ticket.getPayload();
+      } catch (verifyErr) {
+        const decoded = decodeJwtPayload(credential);
+        const tokenAud = decoded?.aud;
+        const tokenIss = decoded?.iss;
+
+        console.error('❌ [Google Auth] verifyIdToken doğrulama hatası:', verifyErr.message);
+        console.error('🔍 [Google Auth Debug] Token payload.aud:', tokenAud);
+        console.error('🔍 [Google Auth Debug] Token payload.iss:', tokenIss);
+        console.error('🎯 [Google Auth Debug] Backend beklenen geçerli audience listesi:', validAudiences);
+
+        return res.status(401).json({
+          success: false,
+          error: 'Google kimlik doğrulama hatası (Audience Uyuşmazlığı)',
+          details: verifyErr.message,
+          debug: {
+            tokenAudience: tokenAud || 'Bilinmiyor',
+            allowedAudiences: validAudiences
+          }
+        });
+      }
+    } else {
+      // Web popup akışı: access token — Google'dan doğrula (aud geçerli audience listemizde olmalı)
+      const info = await googleClient.getTokenInfo(accessToken);
+      if (!validAudiences.includes(info.aud)) {
+        console.error('❌ [Google Auth] Access token aud uyuşmazlığı:', info.aud, 'Beklenen:', validAudiences);
+        throw new Error(`Token bu uygulama için üretilmemiş (aud: ${info.aud})`);
+      }
+      if (!info.email || info.email_verified === false) throw new Error('Google e-postası doğrulanmamış');
+      payload = { sub: info.sub, email: info.email, name: '', picture: '' };
+      try {
+        const r = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        if (r.ok) {
+          const p = await r.json();
+          payload.name = p.name || '';
+          payload.picture = p.picture || '';
+        }
+      } catch { /* profil bilgisi opsiyonel */ }
+    }
     const email = payload.email.toLowerCase().trim();
 
     // Find or create user
@@ -274,7 +357,13 @@ router.post('/google', async (req, res) => {
 router.post('/set-pin', async (req, res) => {
   try {
     const { userId, pin } = req.body;
-    await db.execute({ sql: 'UPDATE users SET pin = ? WHERE id = ?', args: [pin, userId] });
+    if (!userId) return res.status(400).json({ success: false, error: 'userId gerekli' });
+    // pin boş/null → PIN kaldırılır; aksi halde tam 4 rakam olmalı
+    if (pin && !/^\d{4}$/.test(String(pin))) {
+      return res.status(400).json({ success: false, error: 'PIN 4 haneli rakam olmalı.' });
+    }
+    const pinHash = pin ? await bcrypt.hash(String(pin), 10) : null;
+    await db.execute({ sql: 'UPDATE users SET pin = ? WHERE id = ?', args: [pinHash, userId] });
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -285,12 +374,20 @@ router.post('/set-pin', async (req, res) => {
 router.post('/verify-pin', async (req, res) => {
   try {
     const { userId, pin } = req.body;
-    const result = await db.execute({
-      sql: 'SELECT * FROM users WHERE id = ? AND pin = ?',
-      args: [userId, pin]
-    });
+    const result = await db.execute({ sql: 'SELECT * FROM users WHERE id = ?', args: [userId] });
     const user = result.rows[0];
-    if (!user) return res.status(401).json({ success: false, error: 'PIN hatalı.' });
+    if (!user || !user.pin || !pin) return res.status(401).json({ success: false, error: 'PIN hatalı.' });
+
+    const stored = String(user.pin);
+    const isHashed = stored.startsWith('$2');
+    const ok = isHashed ? await bcrypt.compare(String(pin), stored) : stored === String(pin);
+    if (!ok) return res.status(401).json({ success: false, error: 'PIN hatalı.' });
+
+    // Eski düz metin PIN'leri ilk başarılı girişte hash'e çevir
+    if (!isHashed) {
+      const pinHash = await bcrypt.hash(String(pin), 10);
+      await db.execute({ sql: 'UPDATE users SET pin = ? WHERE id = ?', args: [pinHash, user.id] });
+    }
     res.json({
       success: true,
       user: formatUser(user),

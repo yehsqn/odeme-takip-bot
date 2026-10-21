@@ -21,13 +21,16 @@ async function fetchRates() {
   if (rateCache && Date.now() - cacheTime < CACHE_MS) return rateCache;
 
   try {
-    const res = await axios.get('https://api.genelpara.com/embed/para-birimleri.json', { timeout: 8000 });
-    const d = res.data;
+    // Eski embed/para-birimleri.json uç noktası kaldırıldı (404) — JSON API kullanılıyor
+    const res = await axios.get('https://api.genelpara.com/json/?list=doviz&sembol=USD,EUR', { timeout: 8000 });
+    const d = res.data?.data;
+    if (!d?.USD) throw new Error('GenelPara döviz verisi alınamadı');
     rateCache = {
-      USD: parseFloat(d?.USD?.satis) || 0,
-      EUR: parseFloat(d?.EUR?.satis) || 0,
-      USD_Change: parseFloat(d?.USD?.kapanis) || 0,
-      EUR_Change: parseFloat(d?.EUR?.kapanis) || 0,
+      ...rateCache,
+      USD: parseNum(d.USD.satis),
+      EUR: parseNum(d.EUR?.satis),
+      USD_Change: parseNum(d.USD.degisim),
+      EUR_Change: parseNum(d.EUR?.degisim),
       TRY: 1.0,
       updatedAt: new Date().toISOString()
     };
