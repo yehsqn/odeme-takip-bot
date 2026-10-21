@@ -4,7 +4,27 @@ const axios = require('axios');
 const { db } = require('../db/turso');
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
-const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent';
+const GEMINI_MODELS = ['gemini-3.5-flash', 'gemini-3.5-flash-lite', 'gemini-3-flash-preview', 'gemini-3.8-flash'];
+
+async function requestGemini(body) {
+  let lastErr = null;
+  for (const model of GEMINI_MODELS) {
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
+      const response = await axios.post(url, body, { timeout: 25000 });
+      return { response, model };
+    } catch (err) {
+      lastErr = err;
+      const status = err.response?.status;
+      console.warn(`[AI] Model ${model} failed (${status || err.message}), trying next...`);
+      if (status === 404 || status === 503 || status === 429) {
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastErr || new Error('All Gemini models failed');
+}
 
 // Cache per user (10 min)
 const analysisCache = new Map();
@@ -17,18 +37,46 @@ function buildFinancialContext(payments, dailyIncomes, settings) {
   const bankTotals = {};
   const categoryTotals = {};
 
-  for (const payment of payments) {
-    const installments = payment.installmentPlan || [];
+  const safePayments = Array.isArray(payments) ? payments : [];
+
+  for (const payment of safePayments) {
+    const installments = Array.isArray(payment.installmentPlan) && payment.installmentPlan.length > 0
+      ? payment.installmentPlan
+      : [{
+        amount: Number(payment.amount || payment.originalAmount || 0),
+        date: payment.date || payment.dueDate || new Date().toISOString(),
+        isPaid: Boolean(payment.isPaid)
+      }];
+
     for (const inst of installments) {
-      if (!inst.date && !inst.dueDate) continue;
-      const due = new Date(inst.date || inst.dueDate);
-      const key = `${due.getFullYear()}-${String(due.getMonth() + 1).padStart(2, '0')}`;
-      monthlyTotals[key] = (monthlyTotals[key] || 0) + (inst.amount || 0);
-      bankTotals[payment.bank || payment.title || 'Diğer'] =
-        (bankTotals[payment.bank || payment.title || 'Diğer'] || 0) + (inst.amount || 0);
+      const instDate = inst.date || inst.dueDate || payment.date || new Date().toISOString();
+      const due = new Date(instDate);
+      if (!isNaN(due.getTime())) {
+        const key = `${due.getFullYear()}-${String(due.getMonth() + 1).padStart(2, '0')}`;
+        monthlyTotals[key] = (monthlyTotals[key] || 0) + (Number(inst.amount) || 0);
+      }
+      const bankName = payment.bank || payment.title || 'Diğer';
+      bankTotals[bankName] = (bankTotals[bankName] || 0) + (Number(inst.amount) || 0);
       const cat = payment.category || 'Diğer';
-      categoryTotals[cat] = (categoryTotals[cat] || 0) + (inst.amount || 0);
+      categoryTotals[cat] = (categoryTotals[cat] || 0) + (Number(inst.amount) || 0);
     }
+  }
+
+
+
+  const incomeMap = {};
+  for (const [date, data] of Object.entries(dailyIncomes || {})) {
+    const d = new Date(date);
+    if (isNaN(d.getTime())) continue;
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    
+    // Calculate total income (cash + cc + salary + insurance)
+    const totalIncome = (Number(data.cash) || 0) + (Number(data.cc) || 0) + (Number(data.salary) || 0) + (Number(data.insurance) || 0);
+    incomeMap[key] = (incomeMap[key] || 0) + totalIncome;
+
+    // 'other' is used for manual expenses. Add it to monthly debts!
+    const manualExpense = Number(data.other) || 0;
+    monthlyTotals[key] = (monthlyTotals[key] || 0) + manualExpense;
   }
 
   const projections = [];
@@ -39,37 +87,62 @@ function buildFinancialContext(payments, dailyIncomes, settings) {
     projections.push({ month: key, totalDebt: Math.round(monthlyTotals[key] || 0) });
   }
 
-  const incomeMap = {};
-  for (const [date, data] of Object.entries(dailyIncomes || {})) {
-    const d = new Date(date);
-    if (isNaN(d.getTime())) continue;
-    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-    const total = (data.cash || 0) + (data.cc || 0) + (data.salary || 0) +
-      (data.insurance || 0) + (data.other || 0);
-    incomeMap[key] = (incomeMap[key] || 0) + total;
-  }
-
   const monthlyIncomes = Object.values(incomeMap);
   const avgMonthlyIncome = monthlyIncomes.length
     ? Math.round(monthlyIncomes.reduce((a, b) => a + b, 0) / monthlyIncomes.length)
     : 0;
 
   let totalRemainingDebt = 0;
-  for (const payment of payments) {
-    for (const inst of (payment.installmentPlan || [])) {
-      if (!inst.isPaid) totalRemainingDebt += inst.amount || 0;
+  for (const payment of safePayments) {
+    const installments = Array.isArray(payment.installmentPlan) && payment.installmentPlan.length > 0
+      ? payment.installmentPlan
+      : [{
+        amount: Number(payment.amount || payment.originalAmount || 0),
+        isPaid: Boolean(payment.isPaid)
+      }];
+
+    for (const inst of installments) {
+      if (!inst.isPaid) {
+        totalRemainingDebt += (Number(inst.amount) || 0);
+      }
     }
   }
   totalRemainingDebt = Math.round(totalRemainingDebt);
 
+  // Manuel giderleri (dailyIncomes.other) de toplam borça ekle
+  let totalManualExpenses = 0;
+  for (const data of Object.values(dailyIncomes || {})) {
+    totalManualExpenses += (Number(data.other) || 0);
+  }
+  totalRemainingDebt = Math.round(totalRemainingDebt + totalManualExpenses);
+
   const banks = settings?.banks || [];
 
+  let debtToIncomeRatio = 0;
+  if (avgMonthlyIncome > 0) {
+    debtToIncomeRatio = (projections[0]?.totalDebt || 0) / avgMonthlyIncome;
+  } else if ((projections[0]?.totalDebt || 0) > 0) {
+    debtToIncomeRatio = (projections[0]?.totalDebt || 0); // Effectively setting denominator to 1
+  }
+  const debtToIncomeRatioPercentage = Math.round(debtToIncomeRatio * 100);
+
   return {
-    totalActivePayments: payments.length,
+    totalActivePayments: safePayments.length,
     totalMonthlyDebt: projections[0]?.totalDebt || 0,
     totalRemainingDebt,
     avgMonthlyIncome,
+    debtToIncomeRatio,
+    debtToIncomeRatioPercentage,
     projections,
+    recentPayments: safePayments.slice(0, 15).map(p => ({
+      title: p.title || 'Ödeme',
+      amount: Number(p.amount || p.originalAmount || 0),
+      bank: p.bank || 'Diğer',
+      category: p.category || 'Diğer',
+      date: p.date,
+      installments: p.installments || 1,
+      isPaid: Boolean(p.isPaid)
+    })),
     bankBreakdown: Object.entries(bankTotals)
       .map(([bank, total]) => ({ bank, totalDebt: Math.round(total) }))
       .sort((a, b) => b.totalDebt - a.totalDebt)
@@ -90,7 +163,7 @@ function buildPrompt(context, rates, language = 'tr') {
   const isEn = language === 'en';
 
   const rateInfo = rates
-    ? `\n## Current Exchange Rates:\n- USD/TRY: ${rates.USD || '?'} TL\n- EUR/TRY: ${rates.EUR || '?'} TL\n`
+    ? `\n## Current Exchange Rates:\n- USD/TRY: ${rates.USD || '?'} TL\n- EUR/TRY: ${rates.EUR || '?'} TL\n- Gram Altin/TRY: ${rates.GA || '?'} TL\n- Ceyrek Altin/TRY: ${rates.C || '?'} TL\n`
     : '';
 
   const langInstruction = isEn
@@ -122,6 +195,12 @@ Financial Logic Rules:
 User Data to Analyze:
 ${JSON.stringify(context, null, 2)}
 ${rateInfo}
+
+IMPORTANT RULES FOR CALCULATIONS:
+- DO NOT perform your own percentage math for Debt-to-Income.
+- ALWAYS use the provided \`debtToIncomeRatioPercentage\` (${context.debtToIncomeRatioPercentage}%).
+- For example, if debtToIncomeRatioPercentage is 25000, explicitly say "Aylık borcunuz gelirinizin %25000'i kadardır" (or "Your monthly debt is 25000% of your income"). Do NOT invent numbers like 73%.
+
 IMPORTANT: Respond ONLY with valid JSON. Do not include any explanation, markdown, or text outside the JSON object.`;
 }
 
@@ -131,25 +210,39 @@ function buildLocalAnalysis(context, userId, language = 'tr') {
   const { totalMonthlyDebt, totalRemainingDebt, avgMonthlyIncome, projections, bankBreakdown, categoryBreakdown, banks } = context;
 
   const monthlyDebt = totalMonthlyDebt > 0 ? totalMonthlyDebt : Math.round((totalRemainingDebt || 0) / 12);
-  const ratio = avgMonthlyIncome > 0 ? monthlyDebt / avgMonthlyIncome : (monthlyDebt > 0 ? 0.6 : 0);
-  let riskScore, riskLevel, riskReason;
 
-  if (ratio < 0.3) {
-    riskScore = Math.round(ratio * 100);
-    riskLevel = isEn ? 'low' : 'düşük';
-    riskReason = isEn ? 'Your monthly debt/income ratio is low.' : 'Aylık borç/gelir oranınız düşük, sağlıklı görünüyor.';
-  } else if (ratio < 0.5) {
-    riskScore = Math.round(30 + ratio * 40);
-    riskLevel = isEn ? 'medium' : 'orta';
-    riskReason = isEn ? 'Reasonable ratio, but caution advised.' : 'Aylık borç/gelir oranınız makul, dikkatli olunmalı.';
-  } else if (ratio < 0.8) {
-    riskScore = Math.round(50 + ratio * 30);
-    riskLevel = isEn ? 'high' : 'yüksek';
-    riskReason = isEn ? 'Monthly debts exceed 50% of income.' : 'Aylık borçlarınız gelirinizin %50\'sini aşıyor.';
+  // Dinamik ve sürekli risk skoru hesaplaması
+  let ratio = 0;
+  let riskScore = 20;
+
+  if (avgMonthlyIncome > 0) {
+    ratio = monthlyDebt / avgMonthlyIncome;
+    if (ratio < 0.25) riskScore = Math.round(12 + ratio * 45);
+    else if (ratio < 0.5) riskScore = Math.round(24 + ratio * 55);
+    else if (ratio < 0.8) riskScore = Math.round(36 + ratio * 50);
+    else riskScore = Math.min(95, Math.round(62 + Math.min(ratio, 2) * 16));
   } else {
-    riskScore = Math.min(95, Math.round(75 + ratio * 15));
+    // Gelir bilgisi henüz girilmemişse: her yeni ödeme ve borç artışı skoru gerçek zamanlı değiştirir
+    const debtFactor = Math.min(45, (monthlyDebt / 800) * 1.1);
+    const totalFactor = Math.min(25, (totalRemainingDebt / 3500) * 0.6);
+    const countFactor = Math.min(15, (context.totalActivePayments || 0) * 1.5);
+    riskScore = Math.min(95, Math.max(10, Math.round(12 + debtFactor + totalFactor + countFactor)));
+    ratio = Math.min(1.5, (monthlyDebt / 15000) * 0.5 + (totalRemainingDebt / 80000) * 0.5);
+  }
+
+  let riskLevel, riskReason;
+  if (riskScore < 35) {
+    riskLevel = isEn ? 'low' : 'düşük';
+    riskReason = isEn ? 'Your monthly debt/income ratio is low and stable.' : 'Aylık borç dengeniz stabil ve kontrol edilebilir seviyede.';
+  } else if (riskScore < 55) {
+    riskLevel = isEn ? 'medium' : 'orta';
+    riskReason = isEn ? 'Reasonable debt volume, but upcoming payments require attention.' : 'Aylık borç/gelir dengeniz makul, ancak taksit yoğunluğu dikkat gerektiriyor.';
+  } else if (riskScore < 75) {
+    riskLevel = isEn ? 'high' : 'yüksek';
+    riskReason = isEn ? 'Monthly debts take up a high portion of your capacity.' : 'Aylık borçlarınız gelirinizin veya ödeme kapasitenizin büyük kısmını kaplıyor.';
+  } else {
     riskLevel = isEn ? 'critical' : 'kritik';
-    riskReason = isEn ? 'Debt load is critical — take action.' : 'Borç yükünüz kritik — acil önlem alınmalı.';
+    riskReason = isEn ? 'Critical debt load detected — strategic repayment needed.' : 'Borç yükünüz kritik seviyede — acil tasarruf ve yapılandırma planı önerilir.';
   }
 
   const alerts = [];
@@ -210,96 +303,119 @@ function formatPayment(row) {
   };
 }
 
-// GET /api/ai/analyze?userId=xxx&force=false&lang=tr
-router.get('/analyze', async (req, res) => {
+// Handler for GET /api/ai/analyze and POST /api/ai/analyze
+async function handleAnalyze(req, res) {
   try {
-    const { userId, force, lang } = req.query;
+    const userId = req.query.userId || req.body?.userId;
+    const force = req.query.force || req.body?.force;
+    const lang = req.query.lang || req.body?.lang;
+    const providedPayments = req.body?.payments;
+    const providedSettings = req.body?.settings;
+    const providedIncomes = req.body?.dailyIncomes;
+
     if (!userId) return res.status(400).json({ success: false, error: 'userId gerekli' });
 
     const language = lang || 'tr';
-    const forceRefresh = force === 'true';
+    const forceRefresh = force === true || force === 'true';
     const cacheKey = `${userId}_${language}`;
 
-    // Check cache
-    if (!forceRefresh) {
-      const cached = analysisCache.get(cacheKey);
-      if (cached && Date.now() < cached.expiresAt) {
-        console.log(`[AI] Cache hit for ${userId} [${language}]`);
-        return res.json({ success: true, ...cached.result });
-      }
+    let payments = [];
+    let settings = {};
+    let dailyIncomes = {};
+
+    if (Array.isArray(providedPayments)) {
+      payments = providedPayments;
+      settings = providedSettings || {};
+      dailyIncomes = providedIncomes || {};
     } else {
-      analysisCache.delete(cacheKey);
-    }
+      // Fetch user data from Turso
+      const [paymentsResult, settingsResult, incomesResult] = await Promise.all([
+        db.execute({ sql: 'SELECT * FROM payments WHERE user_id = ?', args: [userId] }),
+        db.execute({ sql: 'SELECT * FROM settings WHERE user_id = ?', args: [userId] }),
+        db.execute({ sql: 'SELECT * FROM daily_incomes WHERE user_id = ?', args: [userId] }),
+      ]);
 
-    // Fetch user data from Turso
-    const [paymentsResult, settingsResult, incomesResult] = await Promise.all([
-      db.execute({ sql: 'SELECT * FROM payments WHERE user_id = ?', args: [userId] }),
-      db.execute({ sql: 'SELECT * FROM settings WHERE user_id = ?', args: [userId] }),
-      db.execute({ sql: 'SELECT * FROM daily_incomes WHERE user_id = ?', args: [userId] }),
-    ]);
+      payments = paymentsResult.rows.map(formatPayment);
+      settings = settingsResult.rows[0] ? {
+        banks: JSON.parse(settingsResult.rows[0].banks || '[]'),
+        cutOffDay: settingsResult.rows[0].cut_off_day,
+      } : {};
 
-    const payments = paymentsResult.rows.map(formatPayment);
-    const settings = settingsResult.rows[0] ? {
-      banks: JSON.parse(settingsResult.rows[0].banks || '[]'),
-      cutOffDay: settingsResult.rows[0].cut_off_day,
-    } : {};
-
-    // Build dailyIncomes object
-    const dailyIncomes = {};
-    incomesResult.rows.forEach(d => {
-      dailyIncomes[d.date] = {
-        cash: d.cash || 0, cc: d.cc || 0, salary: d.salary || 0,
-        insurance: d.insurance || 0, other: d.other_income || 0,
-        expenses: JSON.parse(d.expenses || '[]')
-      };
-    });
-
-    // Fetch exchange rates
-    let rates = null;
-    try {
-      const rateRes = await axios.get('https://api.genelpara.com/embed/para-birimleri.json', { timeout: 5000 });
-      const rd = rateRes.data;
-      rates = { USD: parseFloat(rd?.USD?.satis) || 0, EUR: parseFloat(rd?.EUR?.satis) || 0 };
-    } catch (e) {
-      console.warn('[AI] Could not fetch rates:', e.message);
+      incomesResult.rows.forEach(d => {
+        dailyIncomes[d.date] = {
+          cash: d.cash || 0, cc: d.cc || 0, salary: d.salary || 0,
+          insurance: d.insurance || 0, other: d.other_income || 0,
+          expenses: JSON.parse(d.expenses || '[]')
+        };
+      });
     }
 
     // Build context
     const context = buildFinancialContext(payments, dailyIncomes, settings);
 
+    // Fingerprint based on active payments and debt
+    const fingerprint = `${context.totalActivePayments}_${context.totalRemainingDebt}_${context.totalMonthlyDebt}_${payments[0]?.id || ''}`;
+
+    // Check cache: only hit cache if forceRefresh is false AND the data fingerprint matches
+    if (!forceRefresh) {
+      const cached = analysisCache.get(cacheKey);
+      if (cached && Date.now() < cached.expiresAt && cached.fingerprint === fingerprint) {
+        console.log(`[AI] Cache hit for ${userId} [${language}]`);
+        return res.json({ success: true, ...cached.result });
+      }
+    }
+    analysisCache.delete(cacheKey);
+
+    // Fetch exchange rates from GenelPara API for AI Context
+    let rates = { USD: 38.35, EUR: 41.75, GA: 3100, C: 5050 };
+    try {
+      const [dovizRes, altinRes] = await Promise.all([
+        axios.get('https://api.genelpara.com/json/?list=doviz&sembol=USD,EUR', { timeout: 3000 }),
+        axios.get('https://api.genelpara.com/json/?list=altin&sembol=GA,C', { timeout: 3000 })
+      ]);
+      const d = dovizRes.data?.data || dovizRes.data;
+      const a = altinRes.data?.data || altinRes.data;
+      if (d && d.USD && d.EUR) {
+        rates.USD = parseFloat(String(d.USD.satis).replace(',', '.'));
+        rates.EUR = parseFloat(String(d.EUR.satis).replace(',', '.'));
+      }
+      if (a && a.GA && a.C) {
+        rates.GA = parseFloat(String(a.GA.satis).replace(',', '.'));
+        rates.C = parseFloat(String(a.C.satis).replace(',', '.'));
+      }
+    } catch (e) {
+      // keep default fallback rates
+    }
+
     // Try Gemini API
     if (!GEMINI_API_KEY) {
       console.warn('[AI] No GEMINI_API_KEY — using local analysis');
       const result = buildLocalAnalysis(context, userId, language);
-      analysisCache.set(cacheKey, { result, expiresAt: Date.now() + CACHE_TTL_MS });
+      analysisCache.set(cacheKey, { result, fingerprint, expiresAt: Date.now() + CACHE_TTL_MS });
       return res.json({ success: true, ...result });
     }
 
     const prompt = buildPrompt(context, rates, language);
 
     try {
-      const response = await axios.post(
-        `${GEMINI_URL}?key=${GEMINI_API_KEY}`,
-        {
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0.4, maxOutputTokens: 2048, responseMimeType: 'application/json' }
-        },
-        { timeout: 30000 }
-      );
+      const { response, model } = await requestGemini({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.4, maxOutputTokens: 2048, responseMimeType: 'application/json' }
+      });
 
-      const raw = response.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+      const raw = (response.data?.candidates?.[0]?.content?.parts || []).map(p => p.text).filter(Boolean).join('\n');
       if (!raw) throw new Error('Empty Gemini response');
 
       const cleaned = raw.replace(/^```json\n?/, '').replace(/\n?```$/, '').trim();
       const result = { ...JSON.parse(cleaned), context, source: 'gemini' };
-      analysisCache.set(cacheKey, { result, expiresAt: Date.now() + CACHE_TTL_MS });
+      analysisCache.set(cacheKey, { result, fingerprint, expiresAt: Date.now() + CACHE_TTL_MS });
       console.log(`[AI] Gemini analysis cached for ${userId} [${language}]`);
       return res.json({ success: true, ...result });
 
     } catch (geminiErr) {
       console.warn('[AI] Gemini error — local fallback:', geminiErr.message);
       const result = buildLocalAnalysis(context, userId, language);
-      analysisCache.set(cacheKey, { result, expiresAt: Date.now() + CACHE_TTL_MS });
+      analysisCache.set(cacheKey, { result, fingerprint, expiresAt: Date.now() + CACHE_TTL_MS });
       return res.json({ success: true, ...result });
     }
 
@@ -307,6 +423,131 @@ router.get('/analyze', async (req, res) => {
     console.error('[AI] Analysis error:', err);
     res.status(500).json({ success: false, error: err.message });
   }
-});
+}
+
+// --- AI Chat endpoint ---
+async function handleChat(req, res) {
+  try {
+    const { userId, message, history, payments: providedPayments, settings: providedSettings, dailyIncomes: providedIncomes, lang } = req.body || {};
+    const language = lang || 'tr';
+
+    if (!message || !message.trim()) {
+      return res.status(400).json({ success: false, error: 'Mesaj boş olamaz.' });
+    }
+
+    let payments = Array.isArray(providedPayments) ? providedPayments : [];
+    let settings = providedSettings || {};
+    let dailyIncomes = providedIncomes || {};
+
+    if ((!providedPayments || providedPayments.length === 0) && userId) {
+      const [paymentsResult, settingsResult, incomesResult] = await Promise.all([
+        db.execute({ sql: 'SELECT * FROM payments WHERE user_id = ?', args: [userId] }),
+        db.execute({ sql: 'SELECT * FROM settings WHERE user_id = ?', args: [userId] }),
+        db.execute({ sql: 'SELECT * FROM daily_incomes WHERE user_id = ?', args: [userId] }),
+      ]);
+      payments = paymentsResult.rows.map(formatPayment);
+      settings = settingsResult.rows[0] ? {
+        banks: JSON.parse(settingsResult.rows[0].banks || '[]'),
+        cutOffDay: settingsResult.rows[0].cut_off_day,
+      } : {};
+      incomesResult.rows.forEach(d => {
+        dailyIncomes[d.date] = {
+          cash: d.cash || 0, cc: d.cc || 0, salary: d.salary || 0,
+          insurance: d.insurance || 0, other: d.other_income || 0,
+          expenses: JSON.parse(d.expenses || '[]')
+        };
+      });
+    }
+
+    const context = buildFinancialContext(payments, dailyIncomes, settings);
+
+    if (GEMINI_API_KEY) {
+      try {
+        const systemPrompt = `Sen PayPulse uygulamasının içindeki samimi, zeki ve genel amaçlı bir yapay zeka asistanısın (ChatGPT/Gemini gibi). Aynı zamanda finans koçusun.
+Selamlaşma, sohbet, genel kültür, kodlama, tavsiye gibi HER konuda doğal şekilde konuşabilirsin; sadece finansla sınırlı değilsin.
+Kullanıcının finansal verilerini SADECE soru finansla ilgiliyse kullan; selam ve sohbette bunları zorla anlatma.
+Kısa, doğal ve sıcak yanıtlar ver; gerekirse emoji kullan. Yanıt dili Türkçe (kullanıcı başka dilde yazarsa o dilde).
+
+Kullanıcının güncel finansal profili (referans için):
+- Toplam Kalan Borç: ${context.totalRemainingDebt.toLocaleString('tr-TR')} TL
+- Bu Ay Ödenecek Tahmini Taksit: ${context.totalMonthlyDebt.toLocaleString('tr-TR')} TL
+- Ortalama Aylık Gelir: ${context.avgMonthlyIncome.toLocaleString('tr-TR')} TL
+- Aktif Ödeme/Borç Kaydı: ${context.totalActivePayments} adet
+- Banka Borç Dağılımı: ${context.bankBreakdown.map(b => `${b.bank}: ${b.totalDebt.toLocaleString('tr-TR')} TL`).join(', ') || 'Belirtilmemiş'}
+- En Çok Harcanan Kategoriler: ${context.categoryBreakdown.map(c => `${c.category}: ${c.totalSpent.toLocaleString('tr-TR')} TL`).join(', ') || 'Belirtilmemiş'}
+- Yakın Ödemeler: ${context.recentPayments.slice(0, 6).map(p => `${p.title} (${p.amount.toLocaleString('tr-TR')} TL - ${p.bank})`).join(', ') || 'Yok'}
+
+Finansal sorularda gerçek verilere atıfta bulun; diğer konularda normal bir yapay zeka gibi sohbet et.`;
+
+        const formattedContents = [];
+        if (Array.isArray(history) && history.length > 0) {
+          history.slice(-6).forEach(h => {
+            formattedContents.push({
+              role: h.role === 'user' ? 'user' : 'model',
+              parts: [{ text: h.text }]
+            });
+          });
+        }
+        formattedContents.push({
+          role: 'user',
+          parts: [{ text: message }]
+        });
+
+        const { response, model } = await requestGemini({
+          systemInstruction: { parts: [{ text: systemPrompt }] },
+          contents: formattedContents,
+          generationConfig: { temperature: 0.8, maxOutputTokens: 2048 }
+        });
+
+        const reply = (response.data?.candidates?.[0]?.content?.parts || []).map(p => p.text).filter(Boolean).join('\n');
+        if (reply) {
+          return res.json({ success: true, reply, source: 'gemini', model });
+        }
+      } catch (geminiErr) {
+        console.warn('[AI CHAT] Gemini hatası, yerel yanıt motoruna geçiliyor:', geminiErr.response?.status, JSON.stringify(geminiErr.response?.data?.error?.message || geminiErr.message));
+      }
+    }
+
+    // Local smart answer fallback
+    let reply = '';
+    const q = message.toLowerCase().trim();
+    if (/^(selam|merhaba|mrb|slm|hey|hi|hello|günaydın|iyi akşamlar|iyi geceler|sa|selamun aleyküm)\b/.test(q)) {
+      reply = 'Selam! 👋 Ben PayPulse asistanın. Borçların, taksitlerin ve bütçen hakkında konuşabiliriz; ya da sadece sohbet edebiliriz. Nasıl yardımcı olayım?';
+    } else if (/nas[ıi]ls[ıi]n|naber|ne haber|nasılsın/.test(q)) {
+      reply = 'İyiyim, teşekkürler! 😊 Sen nasılsın? Finansal durumunla ilgili bir şey sormak ister misin?';
+    } else if (/te[sş]ekk[uü]r|sa[gğ] ol|eyvallah/.test(q)) {
+      reply = 'Rica ederim! 🙌 Başka bir şey sormak istersen buradayım.';
+    } else if (/kimsin|sen kimsin|adın ne|ne yapabilirsin/.test(q)) {
+      reply = 'Ben PayPulse yapay zeka asistanıyım. Borç/taksit durumunu analiz eder, tasarruf önerileri verir ve sorularını yanıtlarım. 🤖';
+    } else if (q.includes('borc') || q.includes('borç') || q.includes('ne kadar') || q.includes('kalan')) {
+      reply = `📊 **Mevcut Borç Durumunuz:**\n\n` +
+        `• **Toplam Kalan Borç:** ${context.totalRemainingDebt.toLocaleString('tr-TR')} TL\n` +
+        `• **Bu Ay Ödenecek:** ${context.totalMonthlyDebt.toLocaleString('tr-TR')} TL\n` +
+        `• **Aktif Taksit Sayısı:** ${context.totalActivePayments} adet\n\n` +
+        `💡 Yaklaşan taksitlerinizi zamanında kapatmanız faiz ve gecikme risklerini önler.`;
+    } else if (q.includes('kart') || q.includes('banka')) {
+      const topBank = context.bankBreakdown[0];
+      reply = `💳 **Kart ve Banka Dağılımınız:**\n\n` +
+        (topBank ? `En yüksek ödeme hacminiz **${topBank.bank}** üzerinde (${topBank.totalDebt.toLocaleString('tr-TR')} TL).\n\n` : '') +
+        `💡 *Strateji Tavsiyesi:* Yeni bir harcama yaparken hesap kesim tarihi yeni geçmiş olan kartınızı tercih ederek 30-40 güne varan ek vade avantajı sağlayabilirsiniz.`;
+    } else if (q.includes('tasarruf') || q.includes('öneri') || q.includes('tavsiye')) {
+      reply = `🎯 **Akıllı Tasarruf Tavsiyeleriniz:**\n\n` +
+        `1. **Yüksek Faizli Borçları Önceliklendirin:** Gecikmeye girmesi muhtemel veya faiz oranı yüksek taksitleri önce kapatın.\n` +
+        `2. **Aylık Sabit Birikim:** Gelirinizin en az %10'unu harcama yapmadan önce tasarruf hesabına aktarın.\n` +
+        `3. **Kategori Analizi:** En çok harcama yaptığınız kategorileri gözden geçirip isteğe bağlı harcamaları sınırlayın.`;
+    } else {
+      reply = `Finansal verilerinizi inceledim. Toplam **${context.totalRemainingDebt.toLocaleString('tr-TR')} TL** kalan borcunuz ve bu ay **${context.totalMonthlyDebt.toLocaleString('tr-TR')} TL** taksit ödemeniz bulunuyor. Size taksitleriniz, kart stratejiniz veya bütçe planlamanız hakkında detaylı bilgi verebilirim.`;
+    }
+
+    return res.json({ success: true, reply, source: 'smart_local' });
+  } catch (err) {
+    console.error('[AI CHAT Error]:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+router.get('/analyze', handleAnalyze);
+router.post('/analyze', handleAnalyze);
+router.post('/chat', handleChat);
 
 module.exports = router;
