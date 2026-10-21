@@ -23,6 +23,7 @@ const aiRoutes = require('./routes/ai');
 const notificationRoutes = require('./routes/notifications');
 const telegramRoutes = require('./routes/telegram');
 const customerProfileRoutes = require('./routes/customer-profile');
+const feedbackRoutes = require('./routes/feedback');
 
 const app = express();
 const PORT = process.env.PORT || process.env.API_PORT || 4000;
@@ -105,6 +106,7 @@ app.use('/api/ai', aiRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/telegram', telegramRoutes);
 app.use('/api/customer-profile', customerProfileRoutes);
+app.use('/api/feedback', feedbackRoutes);
 
 // Error Reporting Endpoint
 app.post('/api/errors', async (req, res) => {

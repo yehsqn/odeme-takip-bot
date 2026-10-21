@@ -2,6 +2,7 @@ const cron = require('node-cron');
 const { db } = require('./db/turso');
 const { sendToUser } = require('./websocket');
 const { getBot } = require('./bot');
+const { sendOverdueEmail } = require('./mailer');
 
 /**
  * Belirli bir kullanıcı veya saati gelen tüm kullanıcılar için ödeme hatırlatıcılarını kontrol eder.
@@ -65,6 +66,8 @@ async function checkUpcomingPayments(forceAll = false, targetUserId = null) {
     });
 
     let sentCount = 0;
+    // userId → bu çalışmada bildirilen gecikmiş ödemeler (e-posta özeti için)
+    const overdueByUser = new Map();
 
     for (const row of paymentsResult.rows) {
       const userId = row.user_id;
@@ -173,8 +176,31 @@ async function checkUpcomingPayments(forceAll = false, targetUserId = null) {
           console.error('[CRON TG HATA]:', tgErr.message);
         }
 
+        if (notifType === 'reminder_overdue') {
+          if (!overdueByUser.has(userId)) overdueByUser.set(userId, []);
+          overdueByUser.get(userId).push({
+            title: row.title,
+            amountStr,
+            dateStr: instDateStr,
+            overdueDays: Math.abs(diffDays),
+          });
+        }
+
         sentCount++;
         console.log(`[CRON] ✅ Bildirim gönderildi: ${userId} → ${row.title} [${notifType}]`);
+      }
+    }
+
+    // Gecikmiş ödemeler için e-posta (Gmail) özeti — kullanıcı başına tek e-posta
+    for (const [userId, items] of overdueByUser) {
+      try {
+        const userRow = await db.execute({ sql: 'SELECT email FROM users WHERE id = ?', args: [userId] });
+        const email = userRow.rows[0]?.email;
+        if (!email) continue;
+        const ok = await sendOverdueEmail(email, items);
+        console.log(`[CRON] ${ok ? '📧 E-posta gönderildi' : '❌ E-posta gönderilemedi'}: ${email} (${items.length} gecikmiş)`);
+      } catch (mailErr) {
+        console.error('[CRON MAIL HATA]:', mailErr.message);
       }
     }
 

@@ -1,4 +1,4 @@
-Ödeme Takip Sistemi--
+﻿Ödeme Takip Sistemi--
 Kullanıcıların ödeme işlemlerini takip edebileceği bir uygulamadır.
 Teknik Özellikler:
 Pdf-Ödeme işlemlerini pdf olarak oluşturabilir.
@@ -12,4 +12,5 @@ Telegram sayesinde ödemelerinizi hatırlatır
 
 
 
-created by Yehsqn www.yehsan.com
+created by Yehsqn www.yehsqn.com
+
