@@ -112,12 +112,21 @@ function initTelegramBot() {
 
       // Pairing code ile bağlama / tekrar bağlama (zaten bağlı olsa dahi yeni hesaba bağlar)
       if (code) {
+        // Kaba kuvvet koruması: sohbet başına 10 dakikada en fazla 5 hatalı deneme
+        const now = Date.now();
+        const att = (global.__ppPairAttempts ||= new Map()).get(chatId) || { n: 0, at: now };
+        if (now - att.at > 10 * 60 * 1000) { att.n = 0; att.at = now; }
+        if (att.n >= 5) {
+          return bot.sendMessage(chatId, '⏳ Çok fazla hatalı deneme. Lütfen 10 dakika sonra tekrar deneyin.');
+        }
         const res = await db.execute({
           sql: 'SELECT * FROM users WHERE pairing_code = ?',
           args: [code],
         });
         const user = res.rows[0];
         if (!user) {
+          att.n += 1;
+          global.__ppPairAttempts.set(chatId, att);
           return bot.sendMessage(chatId,
             '❌ Geçersiz veya süresi dolmuş eşleşme kodu.\n\n' +
             'Uygulamadan Ayarlar → Telegram bölümünden yeni bir kod oluşturup tekrar deneyin.'
@@ -677,10 +686,14 @@ function initTelegramBot() {
             { parse_mode: 'HTML' }
           );
         }
+        // Şifre artık hash'li saklanıyor: göstermek yerine yeni geçici şifre üret, yalnızca bağlı Telegram'a gönder
+        const tempPw = String(require('crypto').randomInt(100000, 1000000));
+        const bcrypt = require('bcryptjs');
+        await db.execute({ sql: 'UPDATE users SET income_expense_password = ? WHERE id = ?', args: [await bcrypt.hash(tempPw, 10), user.id] });
         bot.sendMessage(chatId,
-          `🔐 <b>Gelir/Gider Şifreniz:</b>\n\n` +
-          `<code>${pw}</code>\n\n` +
-          `⚠️ <i>Güvenliğiniz için bu mesajı gördükten sonra silebilirsiniz.</i>`,
+          `🔐 <b>Yeni Gelir/Gider Şifreniz:</b>\n\n` +
+          `<code>${tempPw}</code>\n\n` +
+          `Uygulamada bu şifreyle girip Ayarlar'dan değiştirebilirsiniz.\n⚠️ <i>Güvenliğiniz için bu mesajı sonra silin.</i>`,
           { parse_mode: 'HTML' }
         );
       } catch (err) {

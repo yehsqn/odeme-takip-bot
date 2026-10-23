@@ -24,6 +24,8 @@ const notificationRoutes = require('./routes/notifications');
 const telegramRoutes = require('./routes/telegram');
 const customerProfileRoutes = require('./routes/customer-profile');
 const feedbackRoutes = require('./routes/feedback');
+const { requireAuth } = require('./middleware/session');
+const { db } = require('./db/turso');
 
 const app = express();
 const PORT = process.env.PORT || process.env.API_PORT || 4000;
@@ -31,6 +33,8 @@ const PORT = process.env.PORT || process.env.API_PORT || 4000;
 // ── Güvenlik Önlemleri ──────────────────────────────────────────
 // Sunucu teknolojisini gizle
 app.disable('x-powered-by');
+// Render bir vekil sunucunun arkasında: gerçek kullanıcı IP'si için (istek sınırlayıcı kişi başına çalışsın)
+app.set('trust proxy', 1);
 
 // Temel Güvenlik HTTP Başlıkları (XSS, Clickjacking, MIME sniffing engelleme)
 app.use((req, res, next) => {
@@ -90,10 +94,19 @@ app.get('/', (req, res) => {
 // Health check
 app.get('/health', (req, res) => res.json({ ok: true, ts: Date.now() }));
 
+// Kod/şifre deneme uçları: kaba kuvvete karşı katı sınır
+for (const route of ['login', 'register', 'google', 'verify-pin', 'verify-income-password', 'forgot-password',
+  'verify-reset-code', 'reset-password', 'verify-email', 'resend-verification', 'delete-account', 'change-password']) {
+  app.use(`/api/auth/${route}`, authLimiter);
+}
+
+// Hata kayıtları için ayrı sınır (anonim gönderilebildiği için)
+const errorLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 30, standardHeaders: true, legacyHeaders: false });
+
+// Oturum doğrulama: /api altındaki her uç (giriş/kayıt/kurlar/webhook hariç) geçerli token ister
+app.use('/api', requireAuth);
+
 // Routes
-app.use('/api/auth/login', authLimiter);
-app.use('/api/auth/verify-pin', authLimiter);
-app.use('/api/auth/verify-income-password', authLimiter);
 app.use('/api/auth', authRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/settings', settingsRoutes);
@@ -109,10 +122,15 @@ app.use('/api/customer-profile', customerProfileRoutes);
 app.use('/api/feedback', feedbackRoutes);
 
 // Error Reporting Endpoint
-app.post('/api/errors', async (req, res) => {
+app.post('/api/errors', errorLimiter, async (req, res) => {
   try {
-    const { error, info, userId } = req.body;
-    console.error('[MOBILE CRASH]', error, info);
+    const { error, info, stack, context, platform, appVersion } = req.body || {};
+    const cut = (v, n) => (v == null ? null : String(typeof v === 'string' ? v : JSON.stringify(v)).slice(0, n));
+    console.error('[APP ERROR]', cut(error, 300));
+    await db.execute({
+      sql: 'INSERT INTO app_errors (user_id, message, stack, context, platform, app_version) VALUES (?, ?, ?, ?, ?, ?)',
+      args: [req.authUserId || null, cut(error, 1000), cut(stack || info, 4000), cut(context, 2000), cut(platform, 60), cut(appVersion, 20)],
+    });
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ success: false });

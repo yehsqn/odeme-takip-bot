@@ -8,6 +8,47 @@ const bcrypt = require('bcryptjs');
 const nodemailer = require('nodemailer');
 const { getBot } = require('../bot');
 const { CUSTOMER_TYPE, PAYMENT_PERMISSIONS, PAYMENT_METHOD_LABELS } = require('../constants/customerTypes');
+const { signToken, ensureSelfParam, invalidateUser } = require('../middleware/session');
+const { sendMail } = require('../mailer');
+
+// Yol parametresindeki kullanıcı kimliği oturum sahibi olmalı (/user/:id, /premium/:id, /pairing-status/:userId)
+router.param('id', ensureSelfParam);
+router.param('userId', ensureSelfParam);
+
+/** Hash'li (bcrypt) veya eski düz metin sırrı doğrular */
+const checkSecret = async (stored, plain) => {
+  if (!stored || plain == null) return false;
+  const v = String(stored);
+  return v.startsWith('$2') ? bcrypt.compare(String(plain), v) : v === String(plain);
+};
+
+const genCode = () => String(crypto.randomInt(100000, 1000000)); // tahmin edilemez 6 haneli kod
+
+/** Kullanıcı bilgisi + oturum anahtarı ile yanıt */
+function sendSession(res, row, extra = {}) {
+  res.json({ success: true, user: formatUser(row), token: signToken(row), ...extra });
+}
+
+async function sendVerificationEmail(email, code) {
+  return sendMail({
+    to: email,
+    subject: '✉️ PayPulse — E-posta doğrulama kodun',
+    html: `<div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;padding:24px;background:#070b1a;color:#e6ecff;border-radius:16px;border:1px solid #1e2a55">
+      <h2 style="color:#5ee7ff;margin-top:0">PayPulse'a hoş geldin!</h2>
+      <p>Hesabını doğrulamak için bu kodu uygulamaya gir:</p>
+      <p style="font-size:32px;font-weight:bold;letter-spacing:8px;color:#fff;background:#0d1430;padding:16px;border-radius:12px;text-align:center">${code}</p>
+      <p style="color:#8ea0d8;font-size:13px">Kod 30 dakika geçerlidir. Bu kaydı sen yapmadıysan e-postayı yok sayabilirsin.</p>
+    </div>`,
+  });
+}
+
+/** Doğrulama kodu üretir, kaydeder ve e-postayla gönderir */
+async function issueVerificationCode(userId, email) {
+  const code = genCode();
+  const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+  await db.execute({ sql: 'UPDATE users SET email_verify_code = ?, email_verify_expires_at = ? WHERE id = ?', args: [code, expiresAt, userId] });
+  return sendVerificationEmail(email, code);
+}
 
 function genId() {
   return crypto.randomBytes(12).toString('hex');
@@ -53,7 +94,7 @@ router.post('/login', async (req, res) => {
       args: [email.toLowerCase().trim()]
     });
     const user = result.rows[0];
-    if (!user) return res.status(401).json({ success: false, error: 'Kullanıcı bulunamadı' });
+    if (!user) return res.status(401).json({ success: false, error: 'E-posta veya şifre hatalı' });
 
     let isPasswordValid = false;
     // Bcrypt hash kontrolü
@@ -75,9 +116,14 @@ router.post('/login', async (req, res) => {
       }
     }
 
-    if (!isPasswordValid) return res.status(401).json({ success: false, error: 'Şifre hatalı' });
+    if (!isPasswordValid) return res.status(401).json({ success: false, error: 'E-posta veya şifre hatalı' });
 
-    res.json({ success: true, user: formatUser(user) });
+    if (Number(user.email_verified) === 0) {
+      const emailSent = await issueVerificationCode(user.id, user.email);
+      return res.status(403).json({ success: false, needsVerification: true, email: user.email, emailSent, error: 'E-posta adresin henüz doğrulanmadı. Sana yeni bir kod gönderdik.' });
+    }
+
+    sendSession(res, user);
   } catch (err) {
     res.status(500).json({ success: false, error: 'Giriş yapılırken bir hata oluştu.' });
   }
@@ -131,7 +177,7 @@ router.post('/register', async (req, res) => {
 
     // Kullanıcı oluştur
     await db.execute({
-      sql: 'INSERT INTO users (id, email, password, customer_type, display_name) VALUES (?, ?, ?, ?, ?)',
+      sql: 'INSERT INTO users (id, email, password, customer_type, display_name, email_verified) VALUES (?, ?, ?, ?, ?, 0)',
       args: [id, email.toLowerCase().trim(), hashedPassword, customerType, displayName]
     });
 
@@ -154,10 +200,8 @@ router.post('/register', async (req, res) => {
     }
 
     // Yeni oluşturulan kullanıcıyı getir ve formatla
-    const newUserRes = await db.execute({ sql: 'SELECT * FROM users WHERE id = ?', args: [id] });
-    const newUser = formatUser(newUserRes.rows[0]);
-
-    res.json({ success: true, user: newUser });
+    const emailSent = await issueVerificationCode(id, email.toLowerCase().trim());
+    res.json({ success: true, needsVerification: true, email: email.toLowerCase().trim(), emailSent });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -342,14 +386,17 @@ router.post('/google', async (req, res) => {
       user = result.rows[0];
     }
 
+    if (Number(user.email_verified) === 0) {
+      await db.execute({ sql: 'UPDATE users SET email_verified = 1, email_verify_code = NULL WHERE id = ?', args: [user.id] });
+    }
     const formatted = formatUser(user);
     formatted.displayName = formatted.displayName || payload.name || '';
     formatted.avatar = formatted.avatar || payload.picture || '';
 
-    res.json({ success: true, user: formatted });
+    res.json({ success: true, user: formatted, token: signToken(user) });
   } catch (err) {
     console.error('Google Auth Error:', err.message);
-    res.status(401).json({ success: false, error: 'Google doğrulama başarısız: ' + err.message });
+    res.status(401).json({ success: false, error: 'Google ile giriş doğrulanamadı. Lütfen tekrar deneyin.' });
   }
 });
 
@@ -404,12 +451,12 @@ router.post('/set-income-password', async (req, res) => {
     const result = await db.execute({ sql: 'SELECT * FROM users WHERE id = ?', args: [userId] });
     const user = result.rows[0];
     if (!user) return res.status(404).json({ success: false, error: 'Kullanıcı bulunamadı' });
-    if (user.income_expense_password && user.income_expense_password !== currentPassword) {
+    if (user.income_expense_password && !(await checkSecret(user.income_expense_password, currentPassword))) {
       return res.status(401).json({ success: false, error: 'Mevcut şifre hatalı' });
     }
     await db.execute({
       sql: 'UPDATE users SET income_expense_password = ? WHERE id = ?',
-      args: [newPassword, userId]
+      args: [newPassword ? await bcrypt.hash(String(newPassword), 10) : null, userId]
     });
     res.json({ success: true });
   } catch (err) {
@@ -424,8 +471,12 @@ router.post('/verify-income-password', async (req, res) => {
     const result = await db.execute({ sql: 'SELECT * FROM users WHERE id = ?', args: [userId] });
     const user = result.rows[0];
     if (!user) return res.status(404).json({ success: false, error: 'Kullanıcı bulunamadı' });
-    if (user.income_expense_password !== password) {
+    if (!(await checkSecret(user.income_expense_password, password))) {
       return res.status(401).json({ success: false, error: 'Şifre hatalı' });
+    }
+    // Eski düz metin şifreyi ilk doğru girişte hash'e çevir
+    if (!String(user.income_expense_password).startsWith('$2')) {
+      await db.execute({ sql: 'UPDATE users SET income_expense_password = ? WHERE id = ?', args: [await bcrypt.hash(String(password), 10), user.id] });
     }
     res.json({ success: true });
   } catch (err) {
@@ -436,15 +487,10 @@ router.post('/verify-income-password', async (req, res) => {
 // POST /api/auth/reset-income-password
 router.post('/reset-income-password', async (req, res) => {
   try {
-    const { email } = req.body;
-    const result = await db.execute({
-      sql: 'SELECT id FROM users WHERE email = ?',
-      args: [email.toLowerCase().trim()]
-    });
-    if (result.rows.length === 0) return res.status(404).json({ success: false, error: 'Kullanıcı bulunamadı' });
+    // Yalnızca oturum sahibinin kendi gelir-gider şifresi sıfırlanabilir (istekteki e-posta dikkate alınmaz)
     await db.execute({
-      sql: 'UPDATE users SET income_expense_password = NULL WHERE email = ?',
-      args: [email.toLowerCase().trim()]
+      sql: 'UPDATE users SET income_expense_password = NULL WHERE id = ?',
+      args: [req.authUserId]
     });
     res.json({ success: true });
   } catch (err) {
@@ -477,8 +523,10 @@ router.post('/change-password', async (req, res) => {
     if (!isMatch) return res.status(401).json({ success: false, error: 'Mevcut şifre hatalı' });
 
     const hashedNew = await bcrypt.hash(newPassword, 10);
-    await db.execute({ sql: 'UPDATE users SET password = ? WHERE id = ?', args: [hashedNew, userId] });
-    res.json({ success: true });
+    await db.execute({ sql: 'UPDATE users SET password = ?, token_version = COALESCE(token_version, 0) + 1 WHERE id = ?', args: [hashedNew, userId] });
+    invalidateUser(userId);
+    const fresh = await db.execute({ sql: 'SELECT * FROM users WHERE id = ?', args: [userId] });
+    res.json({ success: true, token: signToken(fresh.rows[0]) });
   } catch (err) {
     res.status(500).json({ success: false, error: 'Şifre güncellenirken hata oluştu' });
   }
@@ -488,7 +536,7 @@ router.post('/change-password', async (req, res) => {
 router.post('/pairing-code', async (req, res) => {
   try {
     const { userId } = req.body;
-    const code = Math.floor(10000 + Math.random() * 90000).toString();
+    const code = genCode(); // tahmin edilemez 6 haneli eşleştirme kodu
     await db.execute({ sql: 'UPDATE users SET pairing_code = ? WHERE id = ?', args: [code, userId] });
     res.json({ success: true, code });
   } catch (err) {
@@ -665,11 +713,12 @@ router.post('/forgot-password', async (req, res) => {
     const user = result.rows[0];
 
     if (!user) {
-      return res.status(404).json({ success: false, error: 'Bu e-posta adresine ait bir hesap bulunamadı.' });
+      // Hesabın varlığını ele vermemek için aynı yanıt
+      return res.json({ success: true, emailSent: true, message: 'Bu e-postaya kayıtlı bir hesap varsa doğrulama kodu gönderildi.' });
     }
 
     // 6 haneli kod üret ve 10 dk geçerlilik ver
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const code = genCode();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
 
     await db.execute({
@@ -723,7 +772,7 @@ router.post('/verify-reset-code', async (req, res) => {
     const user = result.rows[0];
 
     if (!user) {
-      return res.status(404).json({ success: false, error: 'Kullanıcı bulunamadı.' });
+      return res.status(400).json({ success: false, error: 'Girdiğiniz doğrulama kodu hatalı.' });
     }
 
     if (!user.reset_password_code || user.reset_password_code !== code.trim()) {
@@ -759,7 +808,7 @@ router.post('/reset-password', async (req, res) => {
     const user = result.rows[0];
 
     if (!user) {
-      return res.status(404).json({ success: false, error: 'Kullanıcı bulunamadı.' });
+      return res.status(400).json({ success: false, error: 'Girdiğiniz doğrulama kodu hatalı.' });
     }
 
     if (!user.reset_password_code || user.reset_password_code !== code.trim()) {
@@ -772,13 +821,92 @@ router.post('/reset-password', async (req, res) => {
 
     const hashedPassword = await bcrypt.hash(newPassword, 10);
     await db.execute({
-      sql: 'UPDATE users SET password = ?, reset_password_code = NULL, reset_password_expires_at = NULL WHERE id = ?',
+      sql: 'UPDATE users SET password = ?, reset_password_code = NULL, reset_password_expires_at = NULL, email_verified = 1, token_version = COALESCE(token_version, 0) + 1 WHERE id = ?',
       args: [hashedPassword, user.id]
     });
+    invalidateUser(user.id);
 
     res.json({ success: true, message: 'Şifreniz başarıyla yenilendi! Yeni şifrenizle giriş yapabilirsiniz.' });
   } catch (err) {
     res.status(500).json({ success: false, error: 'Şifre sıfırlanamadı: ' + err.message });
+  }
+});
+
+// POST /api/auth/verify-email — kayıttan sonra gelen 6 haneli kod
+router.post('/verify-email', async (req, res) => {
+  try {
+    const { email, code } = req.body || {};
+    if (!email || !code) return res.status(400).json({ success: false, error: 'E-posta ve kod gerekli' });
+    const r = await db.execute({ sql: 'SELECT * FROM users WHERE email = ?', args: [String(email).toLowerCase().trim()] });
+    const user = r.rows[0];
+    if (!user || !user.email_verify_code || user.email_verify_code !== String(code).trim()) {
+      return res.status(400).json({ success: false, error: 'Doğrulama kodu hatalı.' });
+    }
+    if (new Date() > new Date(user.email_verify_expires_at)) {
+      return res.status(400).json({ success: false, error: 'Kodun süresi dolmuş. Yeni kod iste.' });
+    }
+    await db.execute({ sql: 'UPDATE users SET email_verified = 1, email_verify_code = NULL, email_verify_expires_at = NULL WHERE id = ?', args: [user.id] });
+    invalidateUser(user.id);
+    const fresh = await db.execute({ sql: 'SELECT * FROM users WHERE id = ?', args: [user.id] });
+    sendSession(res, fresh.rows[0]);
+  } catch (err) {
+    res.status(500).json({ success: false, error: 'Doğrulama yapılamadı.' });
+  }
+});
+
+// POST /api/auth/resend-verification
+router.post('/resend-verification', async (req, res) => {
+  try {
+    const email = String(req.body?.email || '').toLowerCase().trim();
+    if (!email) return res.status(400).json({ success: false, error: 'E-posta gerekli' });
+    const r = await db.execute({ sql: 'SELECT id, email, email_verified FROM users WHERE email = ?', args: [email] });
+    const user = r.rows[0];
+    let emailSent = true;
+    if (user && Number(user.email_verified) === 0) emailSent = await issueVerificationCode(user.id, user.email);
+    res.json({ success: true, emailSent, message: 'Doğrulama kodu e-posta adresine gönderildi.' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: 'Kod gönderilemedi.' });
+  }
+});
+
+// POST /api/auth/delete-account — hesabı ve tüm verileri kalıcı olarak siler
+router.post('/delete-account', async (req, res) => {
+  try {
+    const userId = req.authUserId;
+    const { password, confirmText } = req.body || {};
+    const r = await db.execute({ sql: 'SELECT * FROM users WHERE id = ?', args: [userId] });
+    const user = r.rows[0];
+    if (!user) return res.status(404).json({ success: false, error: 'Hesap bulunamadı' });
+
+    const isGoogleOnly = !user.password || String(user.password).startsWith('google_oauth_');
+    if (isGoogleOnly) {
+      if (String(confirmText || '').trim().toUpperCase() !== 'SİL' && String(confirmText || '').trim().toUpperCase() !== 'SIL') {
+        return res.status(400).json({ success: false, error: 'Onaylamak için "SİL" yaz.' });
+      }
+    } else {
+      const ok = String(user.password).startsWith('$2')
+        ? await bcrypt.compare(String(password || ''), user.password)
+        : user.password === password;
+      if (!ok) return res.status(401).json({ success: false, error: 'Şifre hatalı' });
+    }
+
+    await db.batch([
+      { sql: 'DELETE FROM payments WHERE user_id = ?', args: [userId] },
+      { sql: 'DELETE FROM settings WHERE user_id = ?', args: [userId] },
+      { sql: 'DELETE FROM daily_incomes WHERE user_id = ?', args: [userId] },
+      { sql: 'DELETE FROM notifications WHERE user_id = ?', args: [userId] },
+      { sql: 'DELETE FROM individual_profiles WHERE user_id = ?', args: [userId] },
+      { sql: 'DELETE FROM corporate_profiles WHERE user_id = ?', args: [userId] },
+      { sql: 'UPDATE feedbacks SET user_id = NULL, user_email = NULL WHERE user_id = ?', args: [userId] },
+      { sql: 'UPDATE app_errors SET user_id = NULL WHERE user_id = ?', args: [userId] },
+      { sql: 'DELETE FROM users WHERE id = ?', args: [userId] },
+    ], 'write');
+    invalidateUser(userId);
+    console.log(`[AUTH] Hesap silindi: ${userId}`);
+    res.json({ success: true, message: 'Hesabın ve tüm verilerin kalıcı olarak silindi.' });
+  } catch (err) {
+    console.error('[AUTH] Hesap silme hatası:', err.message);
+    res.status(500).json({ success: false, error: 'Hesap silinemedi. Lütfen tekrar dene.' });
   }
 });
 

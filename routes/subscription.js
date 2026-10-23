@@ -1,6 +1,20 @@
 const express = require('express');
 const router = express.Router();
 const { db } = require('../db/turso');
+const crypto = require('crypto');
+const axios = require('axios');
+const { ensureSelfParam, requireAdmin } = require('../middleware/session');
+
+router.param('userId', ensureSelfParam);
+
+// RevenueCat'te tanımlı Premium yetki (entitlement) adları
+const ENTITLEMENTS = (process.env.REVENUECAT_ENTITLEMENTS || 'pro,pro_access').split(',').map(x => x.trim()).filter(Boolean);
+
+const safeEqual = (a, b) => {
+  const x = Buffer.from(String(a || ''));
+  const y = Buffer.from(String(b || ''));
+  return x.length === y.length && crypto.timingSafeEqual(x, y);
+};
 
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'yehsqn@gmail.com';
 
@@ -65,41 +79,36 @@ router.get('/status/:userId', async (req, res) => {
   }
 });
 
-// POST /api/subscription/activate
-router.post('/activate', async (req, res) => {
+// POST /api/subscription/sync — satın alma / geri yükleme sonrası Premium'u RevenueCat'ten DOĞRULAYARAK verir.
+// (Eski /activate ucu hiçbir doğrulama yapmadan Premium verdiği için kaldırıldı.)
+// Gerekli: REVENUECAT_SECRET_KEY (RevenueCat → Project settings → API keys → Secret key)
+router.post('/sync', async (req, res) => {
   try {
-    const { userId, plan, durationMonths } = req.body;
-    if (!userId || !plan) return res.status(400).json({ success: false, error: 'userId ve plan gerekli' });
-
-    const validPlans = ['monthly', 'yearly'];
-    if (!validPlans.includes(plan)) return res.status(400).json({ success: false, error: 'Geçersiz plan' });
-
-    const now = new Date();
-    const expiry = new Date(now);
-    if (plan === 'monthly') {
-      expiry.setMonth(expiry.getMonth() + (durationMonths || 1));
-    } else {
-      expiry.setFullYear(expiry.getFullYear() + 1);
+    const userId = req.authUserId;
+    const key = process.env.REVENUECAT_SECRET_KEY;
+    if (!key) {
+      return res.status(503).json({ success: false, pending: true, error: 'Abonelik doğrulaması sunucuda yapılandırılmamış; satın alman webhook ile işlenecek.' });
     }
+    const r = await axios.get(`https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(userId)}`, {
+      headers: { Authorization: `Bearer ${key}` }, timeout: 10000,
+    });
+    const ents = r.data?.subscriber?.entitlements || {};
+    const now = Date.now();
+    const active = ENTITLEMENTS.map(id => ents[id]).find(e => e && (!e.expires_date || new Date(e.expires_date).getTime() > now));
+    if (!active) return res.json({ success: true, isPremium: false });
 
+    const lifetime = !active.expires_date;
+    const expiry = lifetime ? null : new Date(active.expires_date).toISOString();
+    const plan = lifetime ? 'lifetime' : (/annual|year|yil/i.test(active.product_identifier || '') ? 'yearly' : 'monthly');
     await db.execute({
       sql: `UPDATE users SET subscription_type = ?, subscription_status = 'active', subscription_expiry = ?,
-            subscription_plan = ?, is_premium = 1, premium_expires_at = ?, ai_analysis_tokens = 999
-            WHERE id = ?`,
-      args: [plan, expiry.toISOString(), plan, expiry.toISOString(), userId]
+            subscription_plan = ?, is_premium = 1, premium_expires_at = ?, ai_analysis_tokens = 999 WHERE id = ?`,
+      args: [plan, expiry, plan, expiry, userId],
     });
-
-    res.json({
-      success: true,
-      subscription: {
-        type: plan,
-        status: 'active',
-        expiry: expiry,
-        isPremiumActive: true
-      }
-    });
+    res.json({ success: true, isPremium: true, subscription: { type: plan, status: 'active', expiry, isPremiumActive: true } });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    console.error('[SUBSCRIPTION SYNC]', err.response?.status, err.message);
+    res.status(502).json({ success: false, error: 'Abonelik doğrulanamadı. Biraz sonra tekrar dene.' });
   }
 });
 
@@ -163,7 +172,7 @@ router.post('/consume-ai-token', async (req, res) => {
 });
 
 // POST /api/subscription/admin/grant-premium — Admin'in başka kullanıcıya premium vermesi
-router.post('/admin/grant-premium', async (req, res) => {
+router.post('/admin/grant-premium', requireAdmin, async (req, res) => {
   try {
     const { adminUserId, targetEmail, plan, durationMonths } = req.body;
     if (!adminUserId || !targetEmail) {
@@ -226,7 +235,7 @@ router.post('/admin/grant-premium', async (req, res) => {
 });
 
 // POST /api/subscription/admin/revoke-premium — Admin'in premiumu kaldırması
-router.post('/admin/revoke-premium', async (req, res) => {
+router.post('/admin/revoke-premium', requireAdmin, async (req, res) => {
   try {
     const { adminUserId, targetEmail } = req.body;
     if (!adminUserId || !targetEmail) {
@@ -269,7 +278,7 @@ router.post('/admin/revoke-premium', async (req, res) => {
 });
 
 // GET /api/subscription/admin/users — Admin için kayıtlı kullanıcıları ve abonelik durumlarını listeleme
-router.get('/admin/users', async (req, res) => {
+router.get('/admin/users', requireAdmin, async (req, res) => {
   try {
     const { adminUserId } = req.query;
     if (!adminUserId) {
@@ -321,26 +330,18 @@ router.get('/admin/users', async (req, res) => {
 router.post('/webhook', express.json({ type: '*/*' }), async (req, res) => {
   try {
     const secret = process.env.REVENUECAT_WEBHOOK_SECRET;
-    
-    // İmza doğrulaması (secret ayarlandıysa)
-    if (secret) {
-      const signature = req.headers['x-revenuecat-signature'];
-      if (!signature) {
-        console.warn('[WEBHOOK] İmza başlığı eksik, istek reddedildi.');
-        return res.status(401).json({ error: 'Missing signature' });
-      }
-      
-      const crypto = require('crypto');
-      const rawBody = JSON.stringify(req.body);
-      const expected = crypto
-        .createHmac('sha256', secret)
-        .update(rawBody, 'utf8')
-        .digest('hex');
-      
-      if (signature !== expected) {
-        console.warn('[WEBHOOK] Geçersiz imza, istek reddedildi.');
-        return res.status(401).json({ error: 'Invalid signature' });
-      }
+    // Gizli anahtar tanımlı değilse webhook kabul edilmez (aksi halde herkes sahte "satın alındı" gönderebilir)
+    if (!secret) {
+      console.warn('[WEBHOOK] REVENUECAT_WEBHOOK_SECRET tanımlı değil, istek reddedildi.');
+      return res.status(503).json({ error: 'Webhook not configured' });
+    }
+    // RevenueCat panelindeki "Authorization header value" ile birebir aynı olmalı
+    const auth = req.headers.authorization || '';
+    const signature = req.headers['x-revenuecat-signature'];
+    const hmacOk = signature && safeEqual(signature, crypto.createHmac('sha256', secret).update(JSON.stringify(req.body), 'utf8').digest('hex'));
+    if (!(safeEqual(auth, secret) || safeEqual(auth, `Bearer ${secret}`) || hmacOk)) {
+      console.warn('[WEBHOOK] Geçersiz yetki, istek reddedildi.');
+      return res.status(401).json({ error: 'Unauthorized' });
     }
 
     const event = req.body;
@@ -358,16 +359,20 @@ router.post('/webhook', express.json({ type: '*/*' }), async (req, res) => {
     ].includes(eventType)) {
       const periodType = event?.event?.period_type;
       const plan = periodType === 'ANNUAL' || periodType === 'NON_RECURRING' ? 'yearly' : 'monthly';
+      const expMs = Number(event?.event?.expiration_at_ms);
+      const expiryIso = expMs ? new Date(expMs).toISOString() : null;
       
       try {
         await db.execute({
           sql: `UPDATE users SET
                   subscription_type = ?,
                   subscription_status = 'active',
+                  subscription_expiry = ?,
+                  premium_expires_at = ?,
                   is_premium = 1,
                   ai_analysis_tokens = 999
                 WHERE id = ?`,
-          args: [plan, appUserId]
+          args: [plan, expiryIso, expiryIso, appUserId]
         });
         console.log(`[WEBHOOK] ✅ Kullanıcı ${appUserId} premium aktifleştirildi (${plan})`);
       } catch (dbErr) {
@@ -377,9 +382,7 @@ router.post('/webhook', express.json({ type: '*/*' }), async (req, res) => {
 
     // İptal / süresi dolan olaylar
     if (appUserId && [
-      'CANCELLATION',
       'EXPIRATION',
-      'SUBSCRIBER_ALIAS',
     ].includes(eventType)) {
       try {
         await db.execute({

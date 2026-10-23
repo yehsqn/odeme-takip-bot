@@ -1,5 +1,9 @@
 const express = require('express');
 const router = express.Router();
+const { ensureSelfParam } = require('../middleware/session');
+
+// Yoldaki :userId oturum sahibi olmalı (başkasının verisine erişimi engeller)
+router.param('userId', ensureSelfParam);
 const { db } = require('../db/turso');
 const crypto = require('crypto');
 const { sendToUser } = require('../websocket');
@@ -96,10 +100,11 @@ router.put('/:id', async (req, res) => {
 
     if (sets.length > 0) {
       args.push(req.params.id);
-      await db.execute({ sql: `UPDATE payments SET ${sets.join(', ')} WHERE id = ?`, args });
+      args.push(req.authUserId);
+      await db.execute({ sql: `UPDATE payments SET ${sets.join(', ')} WHERE id = ? AND user_id = ?`, args });
     }
 
-    const result = await db.execute({ sql: 'SELECT * FROM payments WHERE id = ?', args: [req.params.id] });
+    const result = await db.execute({ sql: 'SELECT * FROM payments WHERE id = ? AND user_id = ?', args: [req.params.id, req.authUserId] });
     res.json({ success: true, payment: formatPayment(result.rows[0]) });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -109,7 +114,7 @@ router.put('/:id', async (req, res) => {
 // DELETE /api/payments/:id
 router.delete('/:id', async (req, res) => {
   try {
-    await db.execute({ sql: 'DELETE FROM payments WHERE id = ?', args: [req.params.id] });
+    await db.execute({ sql: 'DELETE FROM payments WHERE id = ? AND user_id = ?', args: [req.params.id, req.authUserId] });
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -120,7 +125,7 @@ router.delete('/:id', async (req, res) => {
 router.put('/:id/installment', async (req, res) => {
   try {
     const { installmentIndex, isPaid } = req.body;
-    const result = await db.execute({ sql: 'SELECT * FROM payments WHERE id = ?', args: [req.params.id] });
+    const result = await db.execute({ sql: 'SELECT * FROM payments WHERE id = ? AND user_id = ?', args: [req.params.id, req.authUserId] });
     const row = result.rows[0];
     if (!row) return res.status(404).json({ success: false, error: 'Ödeme bulunamadı' });
 
@@ -128,8 +133,8 @@ router.put('/:id/installment', async (req, res) => {
     if (plan[installmentIndex] !== undefined) {
       plan[installmentIndex].isPaid = isPaid;
       await db.execute({
-        sql: 'UPDATE payments SET installment_plan = ? WHERE id = ?',
-        args: [JSON.stringify(plan), req.params.id]
+        sql: 'UPDATE payments SET installment_plan = ? WHERE id = ? AND user_id = ?',
+        args: [JSON.stringify(plan), req.params.id, req.authUserId]
       });
 
       // Anlık bildirim: taksit ödendi
