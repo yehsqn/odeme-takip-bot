@@ -174,6 +174,15 @@ async function initDb() {
       created_at  TEXT DEFAULT (datetime('now'))
     )`,
     `CREATE INDEX IF NOT EXISTS idx_app_errors_created ON app_errors(created_at)`,
+    // PulseCity oyun profili (takma ad, lig) — puan kayıtlardan hesaplanır, saklanmaz
+    `CREATE TABLE IF NOT EXISTS game_profiles (
+      user_id    TEXT PRIMARY KEY,
+      nickname   TEXT,
+      opt_in     INTEGER DEFAULT 0,
+      league     INTEGER DEFAULT 0,
+      last_week  TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    )`,
   ]);
 
   // Migration: Mevcut DB'ye yeni sütunlar ekle (varsa atlar)
