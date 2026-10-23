@@ -6,7 +6,8 @@ const nodemailer = require('nodemailer');
  * Tanımlı değilse RESEND_API_KEY yedek olarak denenir.
  * @returns {Promise<boolean>}
  */
-async function sendMail({ to, subject, html }) {
+async function sendMail({ to, subject, html, attachments = [] }) {
+  // attachments: [{ filename, content: Buffer, contentType, cid? }]
   const smtpUser = process.env.SMTP_USER || process.env.EMAIL_USER;
   const smtpPass = process.env.SMTP_PASS || process.env.EMAIL_PASS;
 
@@ -23,6 +24,7 @@ async function sendMail({ to, subject, html }) {
         to,
         subject,
         html,
+        attachments,
       });
       return true;
     } catch (err) {
@@ -40,6 +42,7 @@ async function sendMail({ to, subject, html }) {
         to: [to],
         subject,
         html,
+        attachments: attachments.map(a => ({ filename: a.filename, content: a.content.toString('base64') })),
       });
       if (error) {
         console.error('[MAIL] Resend hatası:', error);

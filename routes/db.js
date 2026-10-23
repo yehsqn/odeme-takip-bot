@@ -44,7 +44,8 @@ function formatSettings(row) {
     backup: {
       enabled: !!row.backup_enabled,
       time: row.backup_time || '00:00'
-    }
+    },
+    extras: (() => { try { return JSON.parse(row.extras || '{}') || {}; } catch { return {}; } })(),
   };
 }
 
@@ -127,8 +128,8 @@ router.post('/save/settings', async (req, res) => {
     }
 
     await db.execute({
-      sql: `INSERT INTO settings (id, user_id, cut_off_day, banks, notification_time, notifications_enabled, notification_days, notify_on_due, notify_overdue, backup_enabled, backup_time)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      sql: `INSERT INTO settings (id, user_id, cut_off_day, banks, notification_time, notifications_enabled, notification_days, notify_on_due, notify_overdue, backup_enabled, backup_time, extras)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(user_id) DO UPDATE SET
               cut_off_day = excluded.cut_off_day,
               banks = excluded.banks,
@@ -138,7 +139,8 @@ router.post('/save/settings', async (req, res) => {
               notify_on_due = excluded.notify_on_due,
               notify_overdue = excluded.notify_overdue,
               backup_enabled = excluded.backup_enabled,
-              backup_time = excluded.backup_time`,
+              backup_time = excluded.backup_time,
+              extras = excluded.extras`,
       args: [
         genId(), userId,
         s.cutOffDay ?? 10,
@@ -149,7 +151,8 @@ router.post('/save/settings', async (req, res) => {
         s.notifyOnDue !== false ? 1 : 0,
         s.notifyOverdue !== false ? 1 : 0,
         s.backup?.enabled ? 1 : 0,
-        s.backup?.time ?? '00:00'
+        s.backup?.time ?? '00:00',
+        JSON.stringify(s.extras && typeof s.extras === 'object' ? s.extras : {}).slice(0, 200000)
       ]
     });
 
