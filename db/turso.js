@@ -173,6 +173,8 @@ async function initDb() {
     { table: 'settings', name: 'notify_overdue', def: 'INTEGER DEFAULT 1' },
     { table: 'settings', name: 'backup_enabled', def: 'INTEGER DEFAULT 0' },
     { table: 'settings', name: 'backup_time', def: "TEXT DEFAULT '00:00'" },
+    // ── Esnek ayarlar (bütçe, hedefler, döviz alarmları, paylaşım) JSON
+    { table: 'settings', name: 'extras', def: "TEXT DEFAULT '{}'" },
     // ── Müşteri tipi migration (mevcut kullanıcılar INDIVIDUAL varsayılır)
     { table: 'users', name: 'customer_type', def: "TEXT NOT NULL DEFAULT 'INDIVIDUAL'" },
     // ── Şifre sıfırlama sütunları

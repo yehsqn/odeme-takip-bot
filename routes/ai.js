@@ -550,4 +550,173 @@ router.get('/analyze', handleAnalyze);
 router.post('/analyze', handleAnalyze);
 router.post('/chat', handleChat);
 
+// ── Sesle / kamerayla ödeme ekleme ─────────────────────────────────────────
+// Girdi: { text? , audio?: dataURL (webm/ogg/mp4/wav), image?: dataURL (jpeg/png/webp) }
+// Çıktı: { success, payment: { type, billCategory, title, amount, currency, date, installments, bank } }
+const BILL_CATEGORY_IDS = ['Elektrik Faturası', 'Su Faturası', 'Doğalgaz Faturası', 'İnternet Faturası', 'Telefon Faturası', 'Kira', 'Aidat', 'Abonelik', 'Kredi Taksiti', 'Sigorta', 'Eğitim', 'Vergi', 'Yatırım', 'Diğer'];
+
+const dataUrlToInline = (dataUrl, allowed) => {
+  const m = typeof dataUrl === 'string' && dataUrl.match(/^data:([a-z]+\/[a-z0-9.+-]+)(?:;[^,]*)?;base64,([A-Za-z0-9+/=]+)$/i);
+  if (!m) return null;
+  const mime = m[1].toLowerCase();
+  if (!allowed.some(a => mime.startsWith(a))) return null;
+  if (m[2].length > 14 * 1024 * 1024) return null; // ~10MB
+  return { inlineData: { mimeType: mime, data: m[2] } };
+};
+
+// ── Kart ekstresinden toplu içe aktarma ────────────────────────────────────
+// Girdi: { file: dataURL (application/pdf | image/*) }
+// Çıktı: { success, bank, statementDate, transactions: [{ date, title, amount, installmentNo, installmentTotal }] }
+router.post('/parse-statement', async (req, res) => {
+  try {
+    const { file, banks } = req.body || {};
+    if (!GEMINI_API_KEY) return res.status(503).json({ success: false, error: 'Yapay zekâ servisi şu an kullanılamıyor.' });
+    const part = dataUrlToInline(file, ['application/pdf', 'image/']);
+    if (!part) return res.status(400).json({ success: false, error: 'Ekstre dosyası okunamadı (PDF veya fotoğraf, en fazla 10MB).' });
+
+    const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Istanbul' });
+    const bankList = Array.isArray(banks) && banks.length ? banks.slice(0, 30).join(', ') : '';
+    const instruction = `Bu bir Türk bankası kredi kartı hesap ekstresi. İçindeki HARCAMA satırlarını çıkar.
+- Ödemeleri, iadeleri, faiz/ücret iadelerini, "önceki dönem borcu" ve "ödeme yapıldı" satırlarını ALMA.
+- Faiz, gecikme faizi, kart aidatı, BSMV/KKDF gibi ücretleri title'da açıkça belirterek al.
+- amount: o satırda bu dönem tahakkuk eden tutar (TL, ondalık, binlik ayırıcı yok).
+- Taksitli satırlarda ("3/6 TAKSİT", "Taksit 2/9" vb.) installmentNo ve installmentTotal doldur; taksitsizse ikisi de 1.
+- date: işlem tarihi YYYY-MM-DD (yıl yoksa ekstre tarihine göre tahmin et; bugün ${today}).
+- title: işyeri adını sadeleştir (ör. "MIGROS TICARET A.S. ISTANBUL" → "Migros").
+- bank: ekstrenin ait olduğu banka${bankList ? ` (şunlardan biri: ${bankList})` : ''}.`;
+
+    const { response, model } = await requestGemini({
+      contents: [{ role: 'user', parts: [{ text: instruction }, part] }],
+      generationConfig: {
+        temperature: 0.1,
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: 'OBJECT',
+          properties: {
+            bank: { type: 'STRING' },
+            statementDate: { type: 'STRING' },
+            transactions: {
+              type: 'ARRAY',
+              items: {
+                type: 'OBJECT',
+                properties: {
+                  date: { type: 'STRING' },
+                  title: { type: 'STRING' },
+                  amount: { type: 'NUMBER' },
+                  installmentNo: { type: 'INTEGER' },
+                  installmentTotal: { type: 'INTEGER' },
+                },
+                required: ['date', 'title', 'amount'],
+              },
+            },
+          },
+          required: ['transactions'],
+        },
+      },
+    });
+
+    const raw = (response.data?.candidates?.[0]?.content?.parts || []).map(p => p.text).filter(Boolean).join('');
+    let p;
+    try { p = JSON.parse(raw); } catch { return res.status(502).json({ success: false, error: 'Ekstre okunamadı, lütfen tekrar deneyin.' }); }
+
+    const transactions = (Array.isArray(p.transactions) ? p.transactions : [])
+      .map(t => {
+        const total = Math.min(36, Math.max(1, parseInt(t.installmentTotal) || 1));
+        const no = Math.min(total, Math.max(1, parseInt(t.installmentNo) || 1));
+        return {
+          date: /^\d{4}-\d{2}-\d{2}$/.test(t.date || '') ? t.date : today,
+          title: String(t.title || '').slice(0, 80),
+          amount: Math.round(Math.abs(Number(t.amount) || 0) * 100) / 100,
+          installmentNo: no,
+          installmentTotal: total,
+        };
+      })
+      .filter(t => t.amount > 0 && t.title)
+      .slice(0, 200);
+
+    res.json({ success: true, bank: String(p.bank || '').slice(0, 40), statementDate: p.statementDate || '', transactions, model });
+  } catch (err) {
+    console.error('[AI PARSE STATEMENT]', err.response?.status, err.response?.data?.error?.message || err.message);
+    res.status(500).json({ success: false, error: 'Ekstre işlenemedi. Lütfen tekrar deneyin.' });
+  }
+});
+
+router.post('/parse-payment', async (req, res) => {
+  try {
+    const { text, audio, image, banks } = req.body || {};
+    if (!GEMINI_API_KEY) return res.status(503).json({ success: false, error: 'Yapay zekâ servisi şu an kullanılamıyor.' });
+
+    const parts = [];
+    const audioPart = audio ? dataUrlToInline(audio, ['audio/']) : null;
+    const imagePart = image ? dataUrlToInline(image, ['image/']) : null;
+    if (audio && !audioPart) return res.status(400).json({ success: false, error: 'Ses kaydı okunamadı.' });
+    if (image && !imagePart) return res.status(400).json({ success: false, error: 'Fotoğraf okunamadı.' });
+    if (!audioPart && !imagePart && !(text || '').trim()) return res.status(400).json({ success: false, error: 'Ses, fotoğraf veya metin gerekli.' });
+
+    const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Istanbul' }); // YYYY-MM-DD
+    const bankList = Array.isArray(banks) && banks.length ? banks.slice(0, 30).join(', ') : 'Akbank, Garanti BBVA, İş Bankası, Yapı Kredi, Ziraat Bankası, Halkbank, Vakıfbank, QNB Finansbank, Diğer';
+
+    const instruction = `Sen PayPulse ödeme takip uygulamasının ödeme ekleme asistanısın. Kullanıcının ${audioPart ? 'ses kaydından' : imagePart ? 'fatura/fiş/ekstre fotoğrafından' : 'yazdığı metinden'} TEK bir ödeme kaydı çıkar.
+Bugünün tarihi: ${today} (Türkiye). "Yarın", "ayın 23'ü", "haftaya cuma" gibi ifadeleri bu tarihe göre YYYY-MM-DD'ye çevir. Tarih yoksa bugünü kullan. Faturada "son ödeme tarihi" varsa onu kullan.
+type: kredi kartı harcaması/taksit ise "credit_card"; fatura, kira, aidat, abonelik, kredi, sigorta, vergi, okul vb. ise "bill".
+billCategory: type "bill" ise şu listeden en uygun olanı: ${BILL_CATEGORY_IDS.join(', ')}. Değilse boş bırak.
+bank: type "credit_card" ise şu bankalardan biri (bilinmiyorsa ilki): ${bankList}.
+amount: sayı (TL ise kuruşlu ondalık, binlik ayırıcı yok). currency: TRY, USD veya EUR.
+installments: kredi kartında taksit sayısı (yoksa 1); "bill" için kaç ay tekrarlanacağı (söylenmediyse 1).
+title: kısa açıklama (ör. "Enerjisa Elektrik", "Ev Kirası", "Migros alışverişi").
+transcript: ses kaydıysa kullanıcının söylediği cümle; değilse kısa özet.
+Emin olamadığın alanlar için confidence "low" ver.`;
+
+    parts.push({ text: instruction });
+    if (audioPart) parts.push(audioPart);
+    if (imagePart) parts.push(imagePart);
+    if ((text || '').trim()) parts.push({ text: `Kullanıcının metni: ${String(text).slice(0, 1000)}` });
+
+    const { response, model } = await requestGemini({
+      contents: [{ role: 'user', parts }],
+      generationConfig: {
+        temperature: 0.1,
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: 'OBJECT',
+          properties: {
+            type: { type: 'STRING', enum: ['credit_card', 'bill'] },
+            billCategory: { type: 'STRING' },
+            title: { type: 'STRING' },
+            amount: { type: 'NUMBER' },
+            currency: { type: 'STRING', enum: ['TRY', 'USD', 'EUR'] },
+            date: { type: 'STRING' },
+            installments: { type: 'INTEGER' },
+            bank: { type: 'STRING' },
+            transcript: { type: 'STRING' },
+            confidence: { type: 'STRING', enum: ['high', 'low'] },
+          },
+          required: ['type', 'title', 'amount', 'date'],
+        },
+      },
+    });
+
+    const raw = (response.data?.candidates?.[0]?.content?.parts || []).map(p => p.text).filter(Boolean).join('');
+    let p;
+    try { p = JSON.parse(raw); } catch { return res.status(502).json({ success: false, error: 'Yapay zekâ yanıtı anlaşılamadı, lütfen tekrar deneyin.' }); }
+
+    const payment = {
+      type: p.type === 'bill' ? 'bill' : 'credit_card',
+      billCategory: BILL_CATEGORY_IDS.includes(p.billCategory) ? p.billCategory : (p.type === 'bill' ? 'Diğer' : ''),
+      title: String(p.title || '').slice(0, 80),
+      amount: Math.max(0, Math.round(Number(p.amount || 0) * 100) / 100),
+      currency: ['TRY', 'USD', 'EUR'].includes(p.currency) ? p.currency : 'TRY',
+      date: /^\d{4}-\d{2}-\d{2}$/.test(p.date || '') ? p.date : today,
+      installments: Math.min(36, Math.max(1, parseInt(p.installments) || 1)),
+      bank: String(p.bank || '').slice(0, 40),
+      transcript: String(p.transcript || '').slice(0, 300),
+      confidence: p.confidence === 'low' ? 'low' : 'high',
+    };
+    res.json({ success: true, payment, model });
+  } catch (err) {
+    console.error('[AI PARSE PAYMENT]', err.response?.status, err.response?.data?.error?.message || err.message);
+    res.status(500).json({ success: false, error: 'Ödeme bilgisi çıkarılamadı. Lütfen tekrar deneyin.' });
+  }
+});
+
 module.exports = router;
