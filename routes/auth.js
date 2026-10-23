@@ -617,7 +617,7 @@ async function sendResetEmail(email, code) {
       const resend = new Resend(resendKey);
 
       const { data, error } = await resend.emails.send({
-        from: 'PayPulse <noreply@yehsqn.online>',
+        from: process.env.MAIL_FROM || 'PayPulse <noreply@sqnova.software>',
         to: [email],
         subject: '🔐 PayPulse - Şifre Sıfırlama Kodu',
         html: `
