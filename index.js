@@ -16,6 +16,7 @@ const paymentRoutes = require('./routes/payments');
 const settingsRoutes = require('./routes/settings');
 const incomeRoutes = require('./routes/income');
 const exchangeRoutes = require('./routes/exchange');
+const gameRoutes = require('./routes/game');
 const subscriptionRoutes = require('./routes/subscription');
 const dbRoutes = require('./routes/db');
 const backupRoutes = require('./routes/backup');
@@ -106,6 +107,17 @@ const errorLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 30, standardHead
 // Oturum doğrulama: /api altındaki her uç (giriş/kayıt/kurlar/webhook hariç) geçerli token ister
 app.use('/api', requireAuth);
 
+// AI uçları ücretli (Gemini): kullanıcı başına saatlik sınır, kota kötüye kullanılamasın
+const aiLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 60,
+  keyGenerator: (req) => `u:${req.authUserId || 'anon'}`,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, error: 'AI kullanım sınırına ulaştınız. Lütfen bir saat sonra tekrar deneyin.' },
+});
+app.use('/api/ai', aiLimiter);
+
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/payments', paymentRoutes);
@@ -120,6 +132,7 @@ app.use('/api/notifications', notificationRoutes);
 app.use('/api/telegram', telegramRoutes);
 app.use('/api/customer-profile', customerProfileRoutes);
 app.use('/api/feedback', feedbackRoutes);
+app.use('/api/game', gameRoutes);
 
 // Error Reporting Endpoint
 app.post('/api/errors', errorLimiter, async (req, res) => {

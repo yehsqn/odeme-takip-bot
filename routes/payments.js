@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const { stampPlan, parsePlan } = require('../game/stamp');
 const { ensureSelfParam } = require('../middleware/session');
 
 // Yoldaki :userId oturum sahibi olmalı (başkasının verisine erişimi engeller)
@@ -58,8 +59,8 @@ router.post('/', async (req, res) => {
       args: [
         id, p.userId, p.id || id, p.title, p.amount, p.installments,
         p.date, p.category, p.bank, p.type,
-        JSON.stringify(p.installmentPlan || []),
-        p.currency || 'TRY', p.originalAmount || null, p.createdAt || new Date().toISOString()
+        JSON.stringify(stampPlan(p.installmentPlan || [], [], new Date().toISOString())),
+        p.currency || 'TRY', p.originalAmount || null, new Date().toISOString()
       ]
     });
     const result = await db.execute({ sql: 'SELECT * FROM payments WHERE id = ?', args: [id] });
@@ -94,7 +95,11 @@ router.put('/:id', async (req, res) => {
     if (p.category !== undefined) { sets.push('category = ?'); args.push(p.category); }
     if (p.bank !== undefined) { sets.push('bank = ?'); args.push(p.bank); }
     if (p.type !== undefined) { sets.push('type = ?'); args.push(p.type); }
-    if (p.installmentPlan !== undefined) { sets.push('installment_plan = ?'); args.push(JSON.stringify(p.installmentPlan)); }
+    if (p.installmentPlan !== undefined) {
+      const prevRow = (await db.execute({ sql: 'SELECT installment_plan FROM payments WHERE id = ? AND user_id = ?', args: [req.params.id, req.authUserId] })).rows[0];
+      sets.push('installment_plan = ?');
+      args.push(JSON.stringify(stampPlan(p.installmentPlan, parsePlan(prevRow?.installment_plan), new Date().toISOString())));
+    }
     if (p.currency !== undefined) { sets.push('currency = ?'); args.push(p.currency); }
     if (p.originalAmount !== undefined) { sets.push('original_amount = ?'); args.push(p.originalAmount); }
 
@@ -131,7 +136,10 @@ router.put('/:id/installment', async (req, res) => {
 
     const plan = JSON.parse(row.installment_plan || '[]');
     if (plan[installmentIndex] !== undefined) {
+      const wasPaid = !!plan[installmentIndex].isPaid;
       plan[installmentIndex].isPaid = isPaid;
+      if (!isPaid) delete plan[installmentIndex].paidAt;
+      else if (!wasPaid) plan[installmentIndex].paidAt = new Date().toISOString();
       await db.execute({
         sql: 'UPDATE payments SET installment_plan = ? WHERE id = ? AND user_id = ?',
         args: [JSON.stringify(plan), req.params.id, req.authUserId]

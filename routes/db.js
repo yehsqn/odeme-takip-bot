@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const { stampPayments } = require('../game/stamp');
 const { ensureSelfParam } = require('../middleware/session');
 
 // Yoldaki :userId oturum sahibi olmalı (başkasının verisine erişimi engeller)
@@ -100,22 +101,41 @@ router.post('/save/payments', async (req, res) => {
       return res.status(400).json({ success: false, error: 'userId and payments array required' });
     }
 
-    // Delete existing payments for this user
-    await db.execute({ sql: 'DELETE FROM payments WHERE user_id = ?', args: [userId] });
+    // Deduplicate incoming payments by their unique frontend ID
+    const uniqueMap = new Map();
+    payments.forEach(p => {
+      if (p.id) {
+        uniqueMap.set(p.id, p);
+      } else {
+        // Fallback for payments without ID
+        uniqueMap.set(genId(), p);
+      }
+    });
+    // Oluşturma/ödeme zamanlarını sunucu belirler (PulseCity hile koruması)
+    const existing = await db.execute({ sql: 'SELECT payment_id, created_at, installment_plan FROM payments WHERE user_id = ?', args: [userId] });
+    const uniquePayments = stampPayments(Array.from(uniqueMap.values()), existing.rows);
 
-    if (payments.length > 0) {
-      const stmts = payments.map(p => ({
-        sql: `INSERT INTO payments (id, user_id, payment_id, title, amount, installments, date, category, bank, type, installment_plan, currency, original_amount, created_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        args: [
-          genId(), userId, p.id || genId(), p.title, p.amount, p.installments,
-          p.date, p.category, p.bank, p.type,
-          JSON.stringify(p.installmentPlan || []),
-          p.currency || 'TRY', p.originalAmount || null, p.createdAt || null
-        ]
-      }));
-      await db.batch(stmts);
+    // Bundle DELETE and INSERT into a single batch transaction to prevent race conditions
+    const stmts = [
+      { sql: 'DELETE FROM payments WHERE user_id = ?', args: [userId] }
+    ];
+
+    if (uniquePayments.length > 0) {
+      uniquePayments.forEach(p => {
+        stmts.push({
+          sql: `INSERT INTO payments (id, user_id, payment_id, title, amount, installments, date, category, bank, type, installment_plan, currency, original_amount, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          args: [
+            genId(), userId, p.id || genId(), p.title, p.amount, p.installments,
+            p.date, p.category, p.bank, p.type,
+            JSON.stringify(p.installmentPlan || []),
+            p.currency || 'TRY', p.originalAmount || null, p.createdAt || null
+          ]
+        });
+      });
     }
+
+    await db.batch(stmts, "write");
 
     res.json({ success: true });
   } catch (err) {
