@@ -38,7 +38,7 @@ async function sendMail({ to, subject, html, attachments = [] }) {
       const { Resend } = require('resend');
       const resend = new Resend(process.env.RESEND_API_KEY);
       const { error } = await resend.emails.send({
-        from: 'PayPulse <noreply@yehsqn.online>',
+        from: process.env.MAIL_FROM || 'PayPulse <noreply@sqnova.software>', // Resend'de doğrulanmış alan adı
         to: [to],
         subject,
         html,
