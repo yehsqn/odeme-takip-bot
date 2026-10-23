@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { db } = require('../db/turso');
 const { getBot } = require('../bot');
+const esc = (v) => String(v ?? '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 
 // POST /api/telegram/send
 router.post('/send', async (req, res) => {
@@ -34,9 +35,9 @@ router.post('/notify', async (req, res) => {
     if (!b) return res.json({ success: false, error: 'Bot yapılandırılmamış' });
 
     const msg = `📝 <b>Yeni Ödeme Eklendi</b>\n\n` +
-      `▪️ <b>${payment.title || 'Ödeme'}</b>\n` +
-      `💰 Tutar: ${(payment.amount || 0).toLocaleString('tr-TR')} TL\n` +
-      `📅 Tarih: ${payment.date || '-'}`;
+      `▪️ <b>${esc(payment?.title || 'Ödeme')}</b>\n` +
+      `💰 Tutar: ${(Number(payment?.amount) || 0).toLocaleString('tr-TR')} TL\n` +
+      `📅 Tarih: ${esc(payment?.date || '-')}`;
     await b.sendMessage(user.telegram_chat_id, msg, { parse_mode: 'HTML' });
     res.json({ success: true });
   } catch (err) {

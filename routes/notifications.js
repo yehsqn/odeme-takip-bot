@@ -1,5 +1,9 @@
 const express = require('express');
 const router = express.Router();
+const { ensureSelfParam } = require('../middleware/session');
+
+// Yoldaki :userId oturum sahibi olmalı (başkasının verisine erişimi engeller)
+router.param('userId', ensureSelfParam);
 const { db } = require('../db/turso');
 
 // Helper: satır → bildirim nesnesi
@@ -51,8 +55,8 @@ router.get('/:userId/unread-count', async (req, res) => {
 router.put('/:id/read', async (req, res) => {
   try {
     await db.execute({
-      sql: `UPDATE notifications SET is_read = 1 WHERE id = ?`,
-      args: [req.params.id],
+      sql: `UPDATE notifications SET is_read = 1 WHERE id = ? AND user_id = ?`,
+      args: [req.params.id, req.authUserId],
     });
     res.json({ success: true });
   } catch (err) {

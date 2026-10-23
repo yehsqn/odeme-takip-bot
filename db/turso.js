@@ -162,6 +162,18 @@ async function initDb() {
       created_at  TEXT DEFAULT (datetime('now'))
     )`,
     `CREATE INDEX IF NOT EXISTS idx_feedbacks_user ON feedbacks(user_id)`,
+    // Uygulama çökme / hata kayıtları (Analytics & Crash)
+    `CREATE TABLE IF NOT EXISTS app_errors (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id     TEXT,
+      message     TEXT,
+      stack       TEXT,
+      context     TEXT,
+      platform    TEXT,
+      app_version TEXT,
+      created_at  TEXT DEFAULT (datetime('now'))
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_app_errors_created ON app_errors(created_at)`,
   ]);
 
   // Migration: Mevcut DB'ye yeni sütunlar ekle (varsa atlar)
@@ -175,6 +187,11 @@ async function initDb() {
     { table: 'settings', name: 'backup_time', def: "TEXT DEFAULT '00:00'" },
     // ── Esnek ayarlar (bütçe, hedefler, döviz alarmları, paylaşım) JSON
     { table: 'settings', name: 'extras', def: "TEXT DEFAULT '{}'" },
+    // ── Oturum güvenliği ve e-posta doğrulama (mevcut kullanıcılar doğrulanmış sayılır)
+    { table: 'users', name: 'token_version', def: 'INTEGER DEFAULT 0' },
+    { table: 'users', name: 'email_verified', def: 'INTEGER DEFAULT 1' },
+    { table: 'users', name: 'email_verify_code', def: 'TEXT' },
+    { table: 'users', name: 'email_verify_expires_at', def: 'TEXT' },
     // ── Müşteri tipi migration (mevcut kullanıcılar INDIVIDUAL varsayılır)
     { table: 'users', name: 'customer_type', def: "TEXT NOT NULL DEFAULT 'INDIVIDUAL'" },
     // ── Şifre sıfırlama sütunları

@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { db } = require('../db/turso');
 const { sendMail } = require('../mailer');
+const { requireAdmin } = require('../middleware/session');
 
 // POST /api/feedback — Kullanıcı geri bildirim ve hata bildirimi
 router.post('/', async (req, res) => {
@@ -89,7 +90,7 @@ ${esc(message.trim())}
 });
 
 // GET /api/feedback — Admin listesi (son 50)
-router.get('/', async (req, res) => {
+router.get('/', requireAdmin, async (req, res) => {
   try {
     const result = await db.execute({
       sql: 'SELECT * FROM feedbacks ORDER BY created_at DESC LIMIT 50'

@@ -9,6 +9,10 @@
 
 const express = require('express');
 const router = express.Router();
+const { ensureSelfParam } = require('../middleware/session');
+
+// Yoldaki :userId oturum sahibi olmalı (başkasının verisine erişimi engeller)
+router.param('userId', ensureSelfParam);
 const { db } = require('../db/turso');
 const {
   CUSTOMER_TYPE,

@@ -1,5 +1,6 @@
 const { WebSocketServer } = require('ws');
 const { db } = require('./db/turso');
+const { authenticate } = require('./middleware/session');
 const crypto = require('crypto');
 
 // userId → WebSocket bağlantısı haritası
@@ -75,8 +76,14 @@ function initWebSocket(httpServer) {
       try {
         const msg = JSON.parse(raw.toString());
 
-        // Kimlik doğrulama: { type: 'AUTH', userId }
-        if (msg.type === 'AUTH' && msg.userId) {
+        // Kimlik doğrulama: { type: 'AUTH', token } — kullanıcı kimliği token'dan alınır (istemcinin söylediği userId değil)
+        if (msg.type === 'AUTH') {
+          const authUser = await authenticate(msg.token);
+          if (!authUser) {
+            ws.send(JSON.stringify({ type: 'AUTH_FAILED' }));
+            return ws.close(4401, 'unauthorized');
+          }
+          msg.userId = authUser.id;
           authenticatedUserId = msg.userId;
           clients.set(msg.userId, ws);
           console.log(`[WS] Kullanıcı bağlandı: ${msg.userId} (toplam: ${clients.size})`);
