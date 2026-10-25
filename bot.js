@@ -36,6 +36,15 @@ function formatCurrency(amount) {
   }) + ' ₺';
 }
 
+function isUserPremium(user) {
+  if (!user) return false;
+  if (user.role === 'admin' || user.email === 'yehsqn@gmail.com') return true;
+  if (user.subscription_type === 'lifetime' || user.subscription_plan === 'lifetime') return true;
+  if (user.subscription_expiry && new Date(user.subscription_expiry) < new Date()) return false;
+  // Ücretsiz hesapların durumu da varsayılan 'active'; Premium için is_premium şart
+  return Number(user.is_premium) === 1;
+}
+
 function sendNotLinked(chatId) {
   if (!bot) return;
   return bot.sendMessage(chatId,
@@ -202,15 +211,20 @@ function initTelegramBot() {
         const pct = totalThisMonth > 0 ? Math.round((paidThisMonth / totalThisMonth) * 100) : 0;
         const bar = '▓'.repeat(Math.floor(pct / 10)) + '░'.repeat(10 - Math.floor(pct / 10));
 
-        bot.sendMessage(chatId,
+        const isPremium = isUserPremium(user);
+        let durumText =
           `📊 <b>${monthName} Ödeme Durumu</b>\n\n` +
           `💳 Bu Ay Toplam: <b>${formatCurrency(totalThisMonth)}</b>\n` +
           `✅ Ödenen: <b>${formatCurrency(paidThisMonth)}</b>\n` +
           `⏳ Bekleyen: <b>${formatCurrency(pendingThisMonth)}</b>\n` +
           `⚠️ Geciken: <b>${formatCurrency(overdueThisMonth)}</b>\n\n` +
-          `📈 <code>[${bar}] %${pct}</code>`,
-          { parse_mode: 'HTML' }
-        );
+          `📈 <code>[${bar}] %${pct}</code>`;
+
+        if (!isPremium) {
+          durumText += `\n\n💎 <i>VIP / PRO: Aylık 80 TL • Yıllık 800 TL</i>`;
+        }
+
+        bot.sendMessage(chatId, durumText, { parse_mode: 'HTML' });
       } catch (err) {
         bot.sendMessage(chatId, '❌ Veriler alınırken hata oluştu: ' + err.message);
       }
@@ -956,17 +970,23 @@ function initTelegramBot() {
         });
         const totalPayments = countRes.rows[0]?.total || 0;
 
-        const isPremium = user.is_premium && (!user.subscription_expiry || new Date(user.subscription_expiry) > new Date());
+        const isPremium = isUserPremium(user);
         const customerTypeLabel = user.customer_type === 'CORPORATE' ? '🏢 Kurumsal' : '👤 Bireysel';
 
         let text = `👤 <b>Hesap Bilgileriniz</b>\n\n`;
         text += `📧 <b>E-Posta:</b> ${user.email}\n`;
         if (user.display_name) text += `🏷️ <b>İsim:</b> ${user.display_name}\n`;
         text += `📋 <b>Müşteri Türü:</b> ${customerTypeLabel}\n`;
-        text += `⭐ <b>Abonelik:</b> ${isPremium ? 'PRO Üye ✨' : 'Standart (Ücretsiz)'}\n`;
+        text += `⭐ <b>Abonelik:</b> ${isPremium ? 'PRO / VIP Üye ✨' : 'Standart (Ücretsiz)'}\n`;
+        if (!isPremium) {
+          text += `💎 <b>VIP / PRO Üyelik:</b> Aylık 80 TL • Yıllık 800 TL\n`;
+        }
         text += `📁 <b>Kayıtlı Ödeme Sayısı:</b> ${totalPayments}\n`;
         text += `🔒 <b>PIN Koruması:</b> ${user.pin ? 'Aktif' : 'Yok'}\n`;
         text += `🔐 <b>Gelir/Gider Şifresi:</b> ${user.income_expense_password ? 'Aktif' : 'Yok'}\n\n`;
+        if (!isPremium) {
+          text += `<i>💡 VIP üyeliğe geçerek tüm sınırları kaldırabilirsiniz.</i>\n\n`;
+        }
         text += `<i>PayPulse sistemiyle anlık senkronizedir.</i>`;
 
         bot.sendMessage(chatId, text, { parse_mode: 'HTML' });
@@ -992,8 +1012,12 @@ function initTelegramBot() {
     });
 
     // ── /yardim ─────────────────────────────────────────────────────────────
-    bot.onText(/\/yardim|\/help/, (msg) => {
-      bot.sendMessage(msg.chat.id,
+    bot.onText(/\/yardim|\/help/, async (msg) => {
+      const chatId = msg.chat.id;
+      const user = await getUserByChatId(chatId);
+      const isPremium = isUserPremium(user);
+
+      let helpText =
         `📱 <b>PayPulse Bot — Komut Listesi</b>\n\n` +
         `<b>📊 Finans & Raporlar</b>\n` +
         `/durum — Bu ayki ödeme durumu\n` +
@@ -1020,9 +1044,13 @@ function initTelegramBot() {
         `/hesap — Kullanıcı ve abonelik durumu\n` +
         `/gelirgidersifre — Gelir/Gider şifresini öğren\n` +
         `/bagla KOD — Hesabı bağla veya tazele\n` +
-        `/cikis — Hesap bağlantısını kaldır`,
-        { parse_mode: 'HTML' }
-      );
+        `/cikis — Hesap bağlantısını kaldır`;
+
+      if (!isPremium) {
+        helpText += `\n\n💎 <b>PayPulse VIP / PRO:</b> Aylık 80 TL • Yıllık 800 TL\n<i>Detaylar için uygulamadaki Abonelik menüsünü ziyaret edin.</i>`;
+      }
+
+      bot.sendMessage(chatId, helpText, { parse_mode: 'HTML' });
     });
 
     // ── Telegram Bot Menüsünü Kaydet ─────────────────────────────────────────
