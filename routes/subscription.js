@@ -22,11 +22,12 @@ const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'yehsqn@gmail.com';
 function isPremiumActive(user) {
   if (!user) return false;
   if (user.role === 'admin' || user.email === ADMIN_EMAIL) return true;
-  if (user.subscription_type === 'lifetime' || user.is_premium === 1) return true;
-  if (user.subscription_type === 'free') return false;
-  if (user.subscription_status !== 'active') return false;
+  if (user.subscription_type === 'lifetime') return true;
+  // Süresi dolan abonelik, is_premium bayrağı kalmış olsa da Premium sayılmaz
   if (user.subscription_expiry && new Date(user.subscription_expiry) < new Date()) return false;
-  return true;
+  if (Number(user.is_premium) === 1) return true;
+  if (user.subscription_type === 'free') return false;
+  return user.subscription_status === 'active';
 }
 
 // GET /api/subscription/status/:userId
@@ -407,3 +408,4 @@ router.post('/webhook', express.json({ type: '*/*' }), async (req, res) => {
 });
 
 module.exports = router;
+module.exports.isPremiumActive = isPremiumActive;

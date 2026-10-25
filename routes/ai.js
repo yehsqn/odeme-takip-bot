@@ -719,4 +719,7 @@ Emin olamadığın alanlar için confidence "low" ver.`;
   }
 });
 
+// Ay sonu AI finans raporu (Premium, sunucuda hesaplanan verilerle)
+router.post('/monthly-report', require('./aiMonthlyReport')(requestGemini, () => !!GEMINI_API_KEY));
+
 module.exports = router;

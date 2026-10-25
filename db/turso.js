@@ -174,6 +174,14 @@ async function initDb() {
       created_at  TEXT DEFAULT (datetime('now'))
     )`,
     `CREATE INDEX IF NOT EXISTS idx_app_errors_created ON app_errors(created_at)`,
+    // AI aylık rapor önbelleği (kullanıcı + ay)
+    `CREATE TABLE IF NOT EXISTS ai_reports (
+      user_id    TEXT NOT NULL,
+      month      TEXT NOT NULL,
+      data       TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (user_id, month)
+    )`,
     // PulseCity oyun profili (takma ad, lig) — puan kayıtlardan hesaplanır, saklanmaz
     `CREATE TABLE IF NOT EXISTS game_profiles (
       user_id    TEXT PRIMARY KEY,
@@ -196,6 +204,8 @@ async function initDb() {
     { table: 'settings', name: 'backup_time', def: "TEXT DEFAULT '00:00'" },
     // ── Esnek ayarlar (bütçe, hedefler, döviz alarmları, paylaşım) JSON
     { table: 'settings', name: 'extras', def: "TEXT DEFAULT '{}'" },
+    // ── Gelir-gider ek alanları (EFT, çek geliri, kategori) JSON
+    { table: 'daily_incomes', name: 'extra', def: "TEXT DEFAULT '{}'" },
     // ── Oturum güvenliği ve e-posta doğrulama (mevcut kullanıcılar doğrulanmış sayılır)
     { table: 'users', name: 'token_version', def: 'INTEGER DEFAULT 0' },
     { table: 'users', name: 'email_verified', def: 'INTEGER DEFAULT 1' },

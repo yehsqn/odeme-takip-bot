@@ -1,5 +1,16 @@
 const express = require('express');
 const router = express.Router();
+// Gelir-gider satırında sütunu olmayan, saklanmasına izin verilen alanlar
+const INCOME_EXTRA_FIELDS = { eft: 'number', checkIncome: 'number', selectedCategory: 'string' };
+const pickIncomeExtra = (data) => {
+  const out = {};
+  for (const [k, t] of Object.entries(INCOME_EXTRA_FIELDS)) {
+    if (data[k] === undefined || data[k] === null || data[k] === '') continue;
+    if (t === 'number') { const n = Number(data[k]); if (Number.isFinite(n)) out[k] = n; }
+    else out[k] = String(data[k]).slice(0, 60);
+  }
+  return out;
+};
 const { stampPayments } = require('../game/stamp');
 const { ensureSelfParam } = require('../middleware/session');
 
@@ -77,7 +88,8 @@ router.get('/load/:userId', async (req, res) => {
         salary: d.salary || 0,
         insurance: d.insurance || 0,
         other: d.other_income || 0,
-        expenses: JSON.parse(d.expenses || '[]')
+        expenses: JSON.parse(d.expenses || '[]'),
+        ...(() => { try { return JSON.parse(d.extra || '{}') || {}; } catch { return {}; } })(),
       };
     });
 
@@ -197,20 +209,22 @@ router.post('/save/daily-incomes', async (req, res) => {
     const stmts = Object.entries(dailyIncomes).map(([date, data]) => {
       if (!data) return null;
       return {
-        sql: `INSERT INTO daily_incomes (id, user_id, date, cash, cc, salary, insurance, other_income, expenses)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        sql: `INSERT INTO daily_incomes (id, user_id, date, cash, cc, salary, insurance, other_income, expenses, extra)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
               ON CONFLICT(user_id, date) DO UPDATE SET
                 cash = excluded.cash,
                 cc = excluded.cc,
                 salary = excluded.salary,
                 insurance = excluded.insurance,
                 other_income = excluded.other_income,
-                expenses = excluded.expenses`,
+                expenses = excluded.expenses,
+                extra = excluded.extra`,
         args: [
           genId(), userId, date,
           data.cash || 0, data.cc || 0, data.salary || 0,
           data.insurance || 0, data.other || 0,
-          JSON.stringify(data.expenses || [])
+          JSON.stringify(data.expenses || []),
+          JSON.stringify(pickIncomeExtra(data))
         ]
       };
     }).filter(Boolean);
