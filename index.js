@@ -77,7 +77,7 @@ app.use('/api/', limiter);
 // Giriş ve Şifre rotaları için Katı Rate Limiting (Brute-force / Şifre tahmin saldırılarını engelleme)
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 dakika
-  max: 20, // 15 dakikada en fazla 20 deneme
+  max: Number(process.env.AUTH_RATE_MAX) || 20, // 15 dakikada en fazla 20 deneme (IP başına)
   message: { success: false, error: 'Çok fazla giriş denemesi yapıldı. Güvenliğiniz için lütfen 15 dakika bekleyin.' },
   standardHeaders: true,
   legacyHeaders: false,

@@ -22,6 +22,50 @@ const checkSecret = async (stored, plain) => {
   return v.startsWith('$2') ? bcrypt.compare(String(plain), v) : v === String(plain);
 };
 
+
+// ── Hesap bazlı deneme sınırı (PIN ve gelir-gider şifresi) ─────────
+// 5 hatalı denemede 5 dk kilit; 10 hatada oturum kapatılır, şifreyle yeniden giriş gerekir.
+// IP sınırına ek olarak: saldırgan IP değiştirse de hesap kilitlenir.
+const ATTEMPT_COLS = {
+  pin: { count: 'pin_fail_count', until: 'pin_locked_until', label: 'PIN' },
+  income: { count: 'income_fail_count', until: 'income_locked_until', label: 'Şifre' },
+};
+const LOCK_AFTER = 5, LOCK_MINUTES = 5, LOGOUT_AFTER = 10;
+
+/** Kilitliyse yanıtı gönderir ve true döner */
+function rejectIfLocked(res, user, kind) {
+  const c = ATTEMPT_COLS[kind];
+  const until = user[c.until] ? Date.parse(user[c.until]) : 0;
+  if (until && until > Date.now()) {
+    const secs = Math.ceil((until - Date.now()) / 1000);
+    res.status(429).json({ success: false, locked: true, retryAfter: secs, error: `Çok fazla hatalı deneme. ${Math.ceil(secs / 60)} dakika sonra tekrar dene.` });
+    return true;
+  }
+  return false;
+}
+
+async function recordFailure(res, user, kind) {
+  const c = ATTEMPT_COLS[kind];
+  const count = (Number(user[c.count]) || 0) + 1;
+  if (count >= LOGOUT_AFTER) {
+    await db.execute({ sql: `UPDATE users SET ${c.count} = 0, ${c.until} = NULL, token_version = COALESCE(token_version, 0) + 1 WHERE id = ?`, args: [user.id] });
+    invalidateUser(user.id);
+    return res.status(401).json({ success: false, code: 'AUTH_REQUIRED', error: `Çok fazla hatalı ${c.label}. Güvenliğin için oturum kapatıldı, şifrenle yeniden giriş yap.` });
+  }
+  const lock = count % LOCK_AFTER === 0 ? new Date(Date.now() + LOCK_MINUTES * 60000).toISOString() : null;
+  await db.execute({ sql: `UPDATE users SET ${c.count} = ?, ${c.until} = ? WHERE id = ?`, args: [count, lock, user.id] });
+  if (lock) return res.status(429).json({ success: false, locked: true, retryAfter: LOCK_MINUTES * 60, error: `Çok fazla hatalı deneme. ${LOCK_MINUTES} dakika sonra tekrar dene.` });
+  const left = LOCK_AFTER - (count % LOCK_AFTER);
+  return res.status(401).json({ success: false, attemptsLeft: left, error: `${c.label} hatalı. ${left} deneme hakkın kaldı.` });
+}
+
+async function resetFailures(user, kind) {
+  const c = ATTEMPT_COLS[kind];
+  if (Number(user[c.count]) || user[c.until]) {
+    await db.execute({ sql: `UPDATE users SET ${c.count} = 0, ${c.until} = NULL WHERE id = ?`, args: [user.id] });
+  }
+}
+
 const genCode = () => String(crypto.randomInt(100000, 1000000)); // tahmin edilemez 6 haneli kod
 
 /** Kullanıcı bilgisi + oturum anahtarı ile yanıt */
@@ -423,12 +467,15 @@ router.post('/verify-pin', async (req, res) => {
     const { userId, pin } = req.body;
     const result = await db.execute({ sql: 'SELECT * FROM users WHERE id = ?', args: [userId] });
     const user = result.rows[0];
-    if (!user || !user.pin || !pin) return res.status(401).json({ success: false, error: 'PIN hatalı.' });
+    if (!user || !user.pin) return res.status(401).json({ success: false, error: 'PIN hatalı.' });
+    if (rejectIfLocked(res, user, 'pin')) return;
+    if (!/^\d{4}$/.test(String(pin || ''))) return recordFailure(res, user, 'pin');
 
     const stored = String(user.pin);
     const isHashed = stored.startsWith('$2');
     const ok = isHashed ? await bcrypt.compare(String(pin), stored) : stored === String(pin);
-    if (!ok) return res.status(401).json({ success: false, error: 'PIN hatalı.' });
+    if (!ok) return recordFailure(res, user, 'pin');
+    await resetFailures(user, 'pin');
 
     // Eski düz metin PIN'leri ilk başarılı girişte hash'e çevir
     if (!isHashed) {
@@ -451,8 +498,10 @@ router.post('/set-income-password', async (req, res) => {
     const result = await db.execute({ sql: 'SELECT * FROM users WHERE id = ?', args: [userId] });
     const user = result.rows[0];
     if (!user) return res.status(404).json({ success: false, error: 'Kullanıcı bulunamadı' });
-    if (user.income_expense_password && !(await checkSecret(user.income_expense_password, currentPassword))) {
-      return res.status(401).json({ success: false, error: 'Mevcut şifre hatalı' });
+    if (user.income_expense_password) {
+      if (rejectIfLocked(res, user, 'income')) return;
+      if (!(await checkSecret(user.income_expense_password, currentPassword))) return recordFailure(res, user, 'income');
+      await resetFailures(user, 'income');
     }
     await db.execute({
       sql: 'UPDATE users SET income_expense_password = ? WHERE id = ?',
@@ -471,9 +520,9 @@ router.post('/verify-income-password', async (req, res) => {
     const result = await db.execute({ sql: 'SELECT * FROM users WHERE id = ?', args: [userId] });
     const user = result.rows[0];
     if (!user) return res.status(404).json({ success: false, error: 'Kullanıcı bulunamadı' });
-    if (!(await checkSecret(user.income_expense_password, password))) {
-      return res.status(401).json({ success: false, error: 'Şifre hatalı' });
-    }
+    if (rejectIfLocked(res, user, 'income')) return;
+    if (!(await checkSecret(user.income_expense_password, password))) return recordFailure(res, user, 'income');
+    await resetFailures(user, 'income');
     // Eski düz metin şifreyi ilk doğru girişte hash'e çevir
     if (!String(user.income_expense_password).startsWith('$2')) {
       await db.execute({ sql: 'UPDATE users SET income_expense_password = ? WHERE id = ?', args: [await bcrypt.hash(String(password), 10), user.id] });
@@ -484,19 +533,8 @@ router.post('/verify-income-password', async (req, res) => {
   }
 });
 
-// POST /api/auth/reset-income-password
-router.post('/reset-income-password', async (req, res) => {
-  try {
-    // Yalnızca oturum sahibinin kendi gelir-gider şifresi sıfırlanabilir (istekteki e-posta dikkate alınmaz)
-    await db.execute({
-      sql: 'UPDATE users SET income_expense_password = NULL WHERE id = ?',
-      args: [req.authUserId]
-    });
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
+// Gelir-gider şifresi kurtarma: yalnızca bağlı Telegram üzerinden (/gelirgidersifre).
+// Doğrulamasız sıfırlama ucu güvenlik nedeniyle kaldırıldı.
 
 // POST /api/auth/change-password
 router.post('/change-password', async (req, res) => {
