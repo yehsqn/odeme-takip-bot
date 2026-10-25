@@ -201,6 +201,11 @@ async function initDb() {
     { table: 'users', name: 'email_verified', def: 'INTEGER DEFAULT 1' },
     { table: 'users', name: 'email_verify_code', def: 'TEXT' },
     { table: 'users', name: 'email_verify_expires_at', def: 'TEXT' },
+    // ── Hesap bazlı deneme sınırı (PIN / gelir-gider şifresi)
+    { table: 'users', name: 'pin_fail_count', def: 'INTEGER DEFAULT 0' },
+    { table: 'users', name: 'pin_locked_until', def: 'TEXT' },
+    { table: 'users', name: 'income_fail_count', def: 'INTEGER DEFAULT 0' },
+    { table: 'users', name: 'income_locked_until', def: 'TEXT' },
     // ── Müşteri tipi migration (mevcut kullanıcılar INDIVIDUAL varsayılır)
     { table: 'users', name: 'customer_type', def: "TEXT NOT NULL DEFAULT 'INDIVIDUAL'" },
     // ── Şifre sıfırlama sütunları

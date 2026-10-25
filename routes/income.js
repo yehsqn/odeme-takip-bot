@@ -83,20 +83,7 @@ router.put('/:userId/:date', async (req, res) => {
   }
 });
 
-// POST /api/income/recover — recover access (reset income password)
-router.post('/recover', async (req, res) => {
-  try {
-    const { userId } = req.body;
-    const result = await db.execute({ sql: 'SELECT id FROM users WHERE id = ?', args: [userId] });
-    if (result.rows.length === 0) return res.status(404).json({ success: false, error: 'Kullanıcı bulunamadı' });
-    await db.execute({
-      sql: 'UPDATE users SET income_expense_password = NULL WHERE id = ?',
-      args: [userId]
-    });
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
+// Gelir-gider şifresi kurtarma yalnızca bağlı Telegram üzerinden (/gelirgidersifre);
+// doğrulamasız sıfırlama ucu güvenlik nedeniyle kaldırıldı.
 
 module.exports = router;
