@@ -17,6 +17,9 @@ const settingsRoutes = require('./routes/settings');
 const incomeRoutes = require('./routes/income');
 const exchangeRoutes = require('./routes/exchange');
 const gameRoutes = require('./routes/game');
+const walletsRoutes = require('./routes/wallets');
+const portfolioRoutes = require('./routes/portfolio');
+const socialRoutes = require('./routes/social');
 const subscriptionRoutes = require('./routes/subscription');
 const dbRoutes = require('./routes/db');
 const backupRoutes = require('./routes/backup');
@@ -133,6 +136,9 @@ app.use('/api/telegram', telegramRoutes);
 app.use('/api/customer-profile', customerProfileRoutes);
 app.use('/api/feedback', feedbackRoutes);
 app.use('/api/game', gameRoutes);
+app.use('/api/wallets', walletsRoutes);
+app.use('/api/portfolio', portfolioRoutes);
+app.use('/api/social', socialRoutes);
 
 // Error Reporting Endpoint
 app.post('/api/errors', errorLimiter, async (req, res) => {

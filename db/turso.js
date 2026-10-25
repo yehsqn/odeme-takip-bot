@@ -191,6 +191,113 @@ async function initDb() {
       last_week  TEXT,
       created_at TEXT DEFAULT (datetime('now'))
     )`,
+
+    // ── Oturum ve Cihaz Listesi (Uzaktan Çıkış) ───────────────
+    `CREATE TABLE IF NOT EXISTS user_sessions (
+      id             TEXT PRIMARY KEY,
+      user_id        TEXT NOT NULL,
+      device_name    TEXT,
+      os             TEXT,
+      browser        TEXT,
+      ip             TEXT,
+      last_active_at TEXT DEFAULT (datetime('now')),
+      created_at     TEXT DEFAULT (datetime('now')),
+      is_revoked     INTEGER DEFAULT 0
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions(user_id, is_revoked)`,
+
+    // ── Çoklu Cüzdan ──────────────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS wallets (
+      id          TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(12)))),
+      user_id     TEXT NOT NULL,
+      name        TEXT NOT NULL,
+      type        TEXT NOT NULL DEFAULT 'bank',
+      balance     REAL DEFAULT 0,
+      currency    TEXT DEFAULT 'TRY',
+      color       TEXT DEFAULT '#3b82f6',
+      icon        TEXT DEFAULT 'Wallet',
+      bank_name   TEXT DEFAULT '',
+      iban_last4  TEXT DEFAULT '',
+      is_default  INTEGER DEFAULT 0,
+      created_at  TEXT DEFAULT (datetime('now')),
+      updated_at  TEXT DEFAULT (datetime('now'))
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_wallets_user ON wallets(user_id)`,
+
+    `CREATE TABLE IF NOT EXISTS wallet_transfers (
+      id             TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(12)))),
+      user_id        TEXT NOT NULL,
+      from_wallet_id TEXT NOT NULL,
+      to_wallet_id   TEXT NOT NULL,
+      amount         REAL NOT NULL,
+      currency       TEXT DEFAULT 'TRY',
+      note           TEXT DEFAULT '',
+      date           TEXT NOT NULL,
+      created_at     TEXT DEFAULT (datetime('now'))
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_wallet_transfers_user ON wallet_transfers(user_id)`,
+
+    // ── Altın, Hisse ve Kripto Portföyü ────────────────────────
+    `CREATE TABLE IF NOT EXISTS portfolio_items (
+      id           TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(12)))),
+      user_id      TEXT NOT NULL,
+      category     TEXT NOT NULL,
+      symbol       TEXT NOT NULL,
+      name         TEXT NOT NULL,
+      amount       REAL NOT NULL,
+      buy_price    REAL NOT NULL,
+      buy_currency TEXT DEFAULT 'TRY',
+      buy_date     TEXT,
+      notes        TEXT DEFAULT '',
+      created_at   TEXT DEFAULT (datetime('now')),
+      updated_at   TEXT DEFAULT (datetime('now'))
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_portfolio_items_user ON portfolio_items(user_id)`,
+
+    // ── Arkadaşlar ve Mesajlaşma (Sosyal) ──────────────────────
+    `CREATE TABLE IF NOT EXISTS friendships (
+      id           TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(12)))),
+      requester_id TEXT NOT NULL,
+      recipient_id TEXT NOT NULL,
+      status       TEXT NOT NULL DEFAULT 'pending',
+      created_at   TEXT DEFAULT (datetime('now')),
+      updated_at   TEXT DEFAULT (datetime('now'))
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_friendships_users ON friendships(requester_id, recipient_id)`,
+
+    `CREATE TABLE IF NOT EXISTS messages (
+      id          TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(12)))),
+      sender_id   TEXT NOT NULL,
+      receiver_id TEXT NOT NULL,
+      content     TEXT NOT NULL,
+      msg_type    TEXT DEFAULT 'text',
+      metadata    TEXT DEFAULT '{}',
+      is_read     INTEGER DEFAULT 0,
+      created_at  TEXT DEFAULT (datetime('now'))
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_messages_pair ON messages(sender_id, receiver_id)`,
+
+    // ── Google Play UGC Politikası: Engelleme ve Şikayet ───────
+    `CREATE TABLE IF NOT EXISTS blocked_users (
+      id         TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(12)))),
+      blocker_id TEXT NOT NULL,
+      blocked_id TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(blocker_id, blocked_id)
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_blocked_users ON blocked_users(blocker_id, blocked_id)`,
+
+    `CREATE TABLE IF NOT EXISTS user_reports (
+      id               TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(12)))),
+      reporter_id      TEXT NOT NULL,
+      reported_user_id TEXT NOT NULL,
+      reason           TEXT NOT NULL,
+      details          TEXT DEFAULT '',
+      message_id       TEXT,
+      status           TEXT DEFAULT 'pending',
+      created_at       TEXT DEFAULT (datetime('now'))
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_user_reports ON user_reports(reported_user_id)`,
   ]);
 
   // Migration: Mevcut DB'ye yeni sütunlar ekle (varsa atlar)
@@ -221,6 +328,11 @@ async function initDb() {
     // ── Şifre sıfırlama sütunları
     { table: 'users', name: 'reset_password_code', def: 'TEXT' },
     { table: 'users', name: 'reset_password_expires_at', def: 'TEXT' },
+    // ── Sosyal ve Cüzdan migration
+    { table: 'users', name: 'friend_code', def: 'TEXT' },
+    { table: 'users', name: 'email_verify_attempts', def: 'INTEGER DEFAULT 0' },
+    { table: 'payments', name: 'wallet_id', def: 'TEXT' },
+    { table: 'daily_incomes', name: 'wallet_id', def: 'TEXT' },
   ];
 
   for (const col of columnsToAdd) {
