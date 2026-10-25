@@ -14,69 +14,77 @@ const unsubscribeHeaders = () => ({
   'List-Unsubscribe': `<mailto:${replyTo()}?subject=unsubscribe>`,
 });
 
-/**
- * Gmail (SMTP) üzerinden e-posta gönderir.
- * Gerekli ortam değişkenleri: SMTP_USER (Gmail adresi) + SMTP_PASS (Google "Uygulama şifresi").
- * Tanımlı değilse RESEND_API_KEY yedek olarak denenir.
- * @returns {Promise<boolean>}
- */
-async function sendMail({ to, subject, html, text, attachments = [] }) {
-  const plain = text || htmlToText(html);
-  // attachments: [{ filename, content: Buffer, contentType, cid? }]
+async function trySmtp({ to, subject, html, plain, attachments }) {
   const smtpUser = process.env.SMTP_USER || process.env.EMAIL_USER;
   const smtpPass = process.env.SMTP_PASS || process.env.EMAIL_PASS;
+  if (!smtpUser || !smtpPass) return null; // yapılandırılmamış
+  try {
+    const transporter = nodemailer.createTransport({
+      host: 'smtp.gmail.com',
+      port: 465,
+      secure: true,
+      auth: { user: smtpUser, pass: smtpPass },
+    });
+    await transporter.sendMail({
+      from: `"PayPulse" <${smtpUser}>`,
+      to,
+      subject,
+      html,
+      text: plain,
+      replyTo: replyTo(),
+      headers: unsubscribeHeaders(),
+      attachments,
+    });
+    return true;
+  } catch (err) {
+    console.error('[MAIL] Gmail SMTP hatası:', err.message);
+    return false;
+  }
+}
 
-  if (smtpUser && smtpPass) {
-    try {
-      const transporter = nodemailer.createTransport({
-        host: 'smtp.gmail.com',
-        port: 465,
-        secure: true,
-        auth: { user: smtpUser, pass: smtpPass },
-      });
-      await transporter.sendMail({
-        from: `"PayPulse Ödeme Takip" <${smtpUser}>`,
-        to,
-        subject,
-        html,
-        text: plain,
-        replyTo: replyTo(),
-        headers: unsubscribeHeaders(),
-        attachments,
-      });
-      return true;
-    } catch (err) {
-      console.error('[MAIL] Gmail SMTP hatası:', err.message);
+async function tryResend({ to, subject, html, plain, attachments }) {
+  if (!process.env.RESEND_API_KEY) return null; // yapılandırılmamış
+  try {
+    const { Resend } = require('resend');
+    const resend = new Resend(process.env.RESEND_API_KEY);
+    const { error } = await resend.emails.send({
+      from: process.env.MAIL_FROM || 'PayPulse <bildirim@yehsqn.com>', // Resend'de doğrulanmış alan adı
+      to: [to],
+      subject,
+      html,
+      text: plain,
+      replyTo: replyTo(),
+      headers: unsubscribeHeaders(),
+      attachments: attachments.map(x => ({ filename: x.filename, content: x.content.toString('base64') })),
+    });
+    if (error) {
+      console.error('[MAIL] Resend hatası:', error);
       return false;
     }
+    return true;
+  } catch (err) {
+    console.error('[MAIL] Resend SDK hatası:', err.message);
+    return false;
   }
+}
 
-  if (process.env.RESEND_API_KEY) {
-    try {
-      const { Resend } = require('resend');
-      const resend = new Resend(process.env.RESEND_API_KEY);
-      const { error } = await resend.emails.send({
-        from: process.env.MAIL_FROM || 'PayPulse <noreply@sqnova.software>', // Resend'de doğrulanmış alan adı
-        to: [to],
-        subject,
-        html,
-        text: plain,
-        replyTo: replyTo(),
-        headers: unsubscribeHeaders(),
-        attachments: attachments.map(a => ({ filename: a.filename, content: a.content.toString('base64') })),
-      });
-      if (error) {
-        console.error('[MAIL] Resend hatası:', error);
-        return false;
-      }
-      return true;
-    } catch (err) {
-      console.error('[MAIL] Resend SDK hatası:', err.message);
-      return false;
-    }
+/**
+ * E-posta gönderir. Kanal sırası:
+ *  - hesap e-postaları (kod, şifre sıfırlama, hatırlatma): önce Gmail SMTP (SMTP_USER + SMTP_PASS),
+ *    Gmail alıcılarında gelen kutusuna düşme oranı yüksek; yoksa / hata verirse Resend
+ *  - bulk: true (toplu duyurular): önce Resend (MAIL_FROM alan adı), Gmail'in günlük sınırını korumak için
+ * @returns {Promise<boolean>}
+ */
+async function sendMail({ to, subject, html, text, attachments = [], bulk = false }) {
+  const msg = { to, subject, html, plain: text || htmlToText(html), attachments };
+  const order = bulk ? [tryResend, trySmtp] : [trySmtp, tryResend];
+  let configured = false;
+  for (const send of order) {
+    const r = await send(msg);
+    if (r === true) return true;
+    if (r === false) configured = true;
   }
-
-  console.warn('[MAIL] E-posta yapılandırması yok (SMTP_USER/SMTP_PASS veya RESEND_API_KEY).');
+  if (!configured) console.warn('[MAIL] E-posta yapılandırması yok (SMTP_USER/SMTP_PASS veya RESEND_API_KEY).');
   return false;
 }
 
