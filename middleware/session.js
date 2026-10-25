@@ -19,9 +19,15 @@ const b64url = (buf) => Buffer.from(buf).toString('base64').replace(/=+$/, '').r
 const fromB64url = (s) => Buffer.from(String(s).replace(/-/g, '+').replace(/_/g, '/'), 'base64');
 const sign = (data) => b64url(crypto.createHmac('sha256', SECRET).update(data).digest());
 
-function signToken(user) {
+function signToken(user, sid = null) {
   const now = Math.floor(Date.now() / 1000);
-  const payload = b64url(JSON.stringify({ uid: user.id, tv: Number(user.token_version) || 0, iat: now, exp: now + TOKEN_TTL_SEC }));
+  const payload = b64url(JSON.stringify({
+    uid: user.id,
+    tv: Number(user.token_version) || 0,
+    sid: sid || undefined,
+    iat: now,
+    exp: now + TOKEN_TTL_SEC
+  }));
   return `${payload}.${sign(payload)}`;
 }
 
@@ -42,6 +48,56 @@ function verifyToken(token) {
 // Kullanıcı başına kısa önbellek (her istekte DB'ye gitmemek için)
 const userCache = new Map();
 const CACHE_MS = 60 * 1000;
+
+// İptal edilen oturumlar için önbellek
+const revokedSessionCache = new Set();
+// Son etkinlik güncelleme throttle (oturum başına en fazla 2 dakikada bir DB'ye yazar)
+const sessionTouchMap = new Map();
+
+// Geçerli oturumlar 30 sn önbellekte (her istekte veritabanına gitmemek için);
+// bu süreçte iptal edilen oturum revokeSession ile anında düşer.
+const activeSessionCache = new Map();
+async function checkSessionRevoked(sid) {
+  if (!sid) return false;
+  if (revokedSessionCache.has(sid)) return true;
+  const okAt = activeSessionCache.get(sid);
+  if (okAt && Date.now() - okAt < 30 * 1000) return false;
+  try {
+    const r = await db.execute({ sql: 'SELECT is_revoked FROM user_sessions WHERE id = ?', args: [sid] });
+    // Kaydı olmayan oturum kimliği geçersizdir (silinmiş / uydurma)
+    if (!r.rows.length || Number(r.rows[0].is_revoked) === 1) {
+      revokedSessionCache.add(sid);
+      return true;
+    }
+    activeSessionCache.set(sid, Date.now());
+  } catch {
+    // Tablo henüz yoksa devam et
+  }
+  return false;
+}
+
+function touchSessionThrottled(sid) {
+  if (!sid) return;
+  const now = Date.now();
+  const last = sessionTouchMap.get(sid) || 0;
+  if (now - last > 120 * 1000) { // 2 dakika
+    sessionTouchMap.set(sid, now);
+    db.execute({
+      sql: `UPDATE user_sessions SET last_active_at = datetime('now') WHERE id = ? AND is_revoked = 0`,
+      args: [sid]
+    }).catch(() => {});
+  }
+}
+
+function revokeSession(sid) {
+  if (!sid) return;
+  revokedSessionCache.add(sid);
+  activeSessionCache.delete(sid);
+}
+
+function clearRevokedSessionCache() {
+  revokedSessionCache.clear();
+}
 
 async function loadAuthUser(uid) {
   const hit = userCache.get(uid);
@@ -69,10 +125,12 @@ const tokenFromReq = (req) => {
 async function authenticate(token) {
   const data = verifyToken(token);
   if (!data) return null;
+  if (data.sid && (await checkSessionRevoked(data.sid))) return null;
   const user = await loadAuthUser(data.uid);
   if (!user) return null; // hesap silinmiş
   if ((Number(user.token_version) || 0) !== (Number(data.tv) || 0)) return null; // şifre değişti / tüm oturumlar kapatıldı
-  return user;
+  if (data.sid) touchSessionThrottled(data.sid);
+  return { ...user, sid: data.sid || null };
 }
 
 // Oturum gerektirmeyen uçlar (giriş, kayıt, şifre sıfırlama, herkese açık kurlar, ödeme webhook'u)
@@ -102,6 +160,7 @@ async function requireAuth(req, res, next) {
     }
     req.authUser = user;
     req.authUserId = user.id;
+    req.authSessionId = user.sid || null;
 
     for (const src of [req.body, req.query]) {
       if (!src || typeof src !== 'object') continue;
@@ -135,4 +194,4 @@ function requireAdmin(req, res, next) {
   next();
 }
 
-module.exports = { signToken, verifyToken, authenticate, requireAuth, ensureSelfParam, requireAdmin, invalidateUser, isAdmin };
+module.exports = { signToken, verifyToken, authenticate, requireAuth, ensureSelfParam, requireAdmin, invalidateUser, isAdmin, revokeSession };

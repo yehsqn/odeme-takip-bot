@@ -128,4 +128,20 @@ function initWebSocket(httpServer) {
   return wss;
 }
 
-module.exports = { sendToUser, initWebSocket, clients };
+/**
+ * Belirli bir kullanıcıya doğrudan WebSocket olayı gönderir
+ */
+function sendWsEvent(userId, event) {
+  const ws = clients.get(userId);
+  if (ws && ws.readyState === 1 /* OPEN */) {
+    try {
+      ws.send(JSON.stringify(event));
+      return true;
+    } catch (err) {
+      console.error('[WS] Event send error:', err.message);
+    }
+  }
+  return false;
+}
+
+module.exports = { sendToUser, sendWsEvent, initWebSocket, clients };

@@ -8,7 +8,7 @@ const bcrypt = require('bcryptjs');
 const nodemailer = require('nodemailer');
 const { getBot } = require('../bot');
 const { CUSTOMER_TYPE, PAYMENT_PERMISSIONS, PAYMENT_METHOD_LABELS } = require('../constants/customerTypes');
-const { signToken, ensureSelfParam, invalidateUser } = require('../middleware/session');
+const { signToken, ensureSelfParam, invalidateUser, revokeSession } = require('../middleware/session');
 const { sendMail } = require('../mailer');
 
 // Yol parametresindeki kullanıcı kimliği oturum sahibi olmalı (/user/:id, /premium/:id, /pairing-status/:userId)
@@ -68,11 +68,6 @@ async function resetFailures(user, kind) {
 
 const genCode = () => String(crypto.randomInt(100000, 1000000)); // tahmin edilemez 6 haneli kod
 
-/** Kullanıcı bilgisi + oturum anahtarı ile yanıt */
-function sendSession(res, row, extra = {}) {
-  res.json({ success: true, user: formatUser(row), token: signToken(row), ...extra });
-}
-
 async function sendVerificationEmail(email, code) {
   return sendMail({
     to: email,
@@ -86,11 +81,11 @@ async function sendVerificationEmail(email, code) {
   });
 }
 
-/** Doğrulama kodu üretir, kaydeder ve e-postayla gönderir */
+/** Doğrulama kodu üretir, kaydeder ve e-postayla gönderir (deneme sayacı sıfırlanır) */
 async function issueVerificationCode(userId, email) {
   const code = genCode();
   const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
-  await db.execute({ sql: 'UPDATE users SET email_verify_code = ?, email_verify_expires_at = ? WHERE id = ?', args: [code, expiresAt, userId] });
+  await db.execute({ sql: 'UPDATE users SET email_verify_code = ?, email_verify_expires_at = ?, email_verify_attempts = 0 WHERE id = ?', args: [code, expiresAt, userId] });
   return sendVerificationEmail(email, code);
 }
 
@@ -98,11 +93,78 @@ function genId() {
   return crypto.randomBytes(12).toString('hex');
 }
 
+/** Cihaz ve tarayıcı tespiti */
+async function createSessionRow(req, userId) {
+  const sid = crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex');
+  const ua = req?.headers ? (req.headers['user-agent'] || '') : '';
+  const ip = req?.headers ? (req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || '') : '';
+
+  let os = 'Bilinmeyen Cihaz';
+  let browser = 'Tarayıcı';
+  let deviceName = 'Web Oturumu';
+
+  if (/android/i.test(ua)) {
+    os = 'Android';
+    deviceName = 'Android Cihaz';
+  } else if (/iphone|ipad|ipod/i.test(ua)) {
+    os = 'iOS';
+    deviceName = /ipad/i.test(ua) ? 'iPad' : 'iPhone';
+  } else if (/windows/i.test(ua)) {
+    os = 'Windows';
+    deviceName = 'Windows PC';
+  } else if (/macintosh|mac os x/i.test(ua)) {
+    os = 'macOS';
+    deviceName = 'Mac Bilgisayar';
+  } else if (/linux/i.test(ua)) {
+    os = 'Linux';
+    deviceName = 'Linux Cihaz';
+  }
+
+  if (/capacitor/i.test(ua) || req?.headers?.['x-platform'] === 'capacitor') {
+    browser = 'PayPulse Mobil';
+    deviceName = `${os} Uygulaması`;
+  } else if (/electron/i.test(ua)) {
+    browser = 'PayPulse Masaüstü';
+    deviceName = 'Masaüstü Uygulaması';
+  } else if (/edg/i.test(ua)) {
+    browser = 'Microsoft Edge';
+  } else if (/chrome|crios/i.test(ua)) {
+    browser = 'Google Chrome';
+  } else if (/firefox|fxios/i.test(ua)) {
+    browser = 'Mozilla Firefox';
+  } else if (/safari/i.test(ua)) {
+    browser = 'Apple Safari';
+  }
+
+  try {
+    await db.execute({
+      sql: `INSERT INTO user_sessions (id, user_id, device_name, os, browser, ip, last_active_at, created_at, is_revoked)
+            VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), 0)`,
+      args: [sid, userId, deviceName, os, browser, ip]
+    });
+  } catch (err) {
+    console.error('[AUTH] Session insert error:', err.message);
+    return null; // kayıt yoksa anahtar oturum kimliği taşımasın (aksi halde geçersiz sayılır)
+  }
+
+  return sid;
+}
+
+/** Kullanıcı bilgisi + oturum anahtarı ile yanıt */
+async function sendSession(res, row, extra = {}, req = null) {
+  let sid = null;
+  if (req) {
+    sid = await createSessionRow(req, row.id);
+  }
+  res.json({ success: true, user: formatUser(row), token: signToken(row, sid), sessionId: sid, ...extra });
+}
+
 // Helper: row → user response
 function formatUser(row) {
   if (!row) return null;
   const isActive = row.is_premium && (!row.subscription_expiry || new Date(row.subscription_expiry) > new Date());
   const customerType = String(row.customer_type || CUSTOMER_TYPE.INDIVIDUAL).toUpperCase();
+  const friendCode = row.friend_code || null; // rastgele kod /api/social/me ile atanır
   return {
     id: row.id,
     email: row.email,
@@ -118,6 +180,7 @@ function formatUser(row) {
     aiAnalysisTokens: isActive ? 999 : (row.ai_analysis_tokens ?? 1),
     displayName: row.display_name || '',
     avatar: row.avatar || '',
+    friendCode,
     // Müşteri tipi bilgileri
     customerType,
     allowedPaymentMethods: (PAYMENT_PERMISSIONS[customerType] || []).map(m => ({
@@ -167,7 +230,7 @@ router.post('/login', async (req, res) => {
       return res.status(403).json({ success: false, needsVerification: true, email: user.email, emailSent, error: 'E-posta adresin henüz doğrulanmadı. Sana yeni bir kod gönderdik.' });
     }
 
-    sendSession(res, user);
+    await sendSession(res, user, {}, req);
   } catch (err) {
     res.status(500).json({ success: false, error: 'Giriş yapılırken bir hata oluştu.' });
   }
@@ -437,7 +500,8 @@ router.post('/google', async (req, res) => {
     formatted.displayName = formatted.displayName || payload.name || '';
     formatted.avatar = formatted.avatar || payload.picture || '';
 
-    res.json({ success: true, user: formatted, token: signToken(user) });
+    const sid = await createSessionRow(req, user.id);
+    res.json({ success: true, user: formatted, token: signToken(user, sid), sessionId: sid });
   } catch (err) {
     console.error('Google Auth Error:', err.message);
     res.status(401).json({ success: false, error: 'Google ile giriş doğrulanamadı. Lütfen tekrar deneyin.' });
@@ -886,7 +950,16 @@ router.post('/verify-email', async (req, res) => {
     if (!email || !code) return res.status(400).json({ success: false, error: 'E-posta ve kod gerekli' });
     const r = await db.execute({ sql: 'SELECT * FROM users WHERE email = ?', args: [String(email).toLowerCase().trim()] });
     const user = r.rows[0];
-    if (!user || !user.email_verify_code || user.email_verify_code !== String(code).trim()) {
+    if (!user || !user.email_verify_code) {
+      return res.status(400).json({ success: false, error: 'Doğrulama kodu hatalı.' });
+    }
+    if (user.email_verify_code !== String(code).trim()) {
+      const attempts = (Number(user.email_verify_attempts) || 0) + 1;
+      if (attempts >= 5) {
+        await db.execute({ sql: 'UPDATE users SET email_verify_code = NULL, email_verify_attempts = 0 WHERE id = ?', args: [user.id] });
+        return res.status(400).json({ success: false, codeExpired: true, error: 'Çok fazla hatalı deneme. Yeni bir kod iste.' });
+      }
+      await db.execute({ sql: 'UPDATE users SET email_verify_attempts = ? WHERE id = ?', args: [attempts, user.id] });
       return res.status(400).json({ success: false, error: 'Doğrulama kodu hatalı.' });
     }
     if (new Date() > new Date(user.email_verify_expires_at)) {
@@ -895,7 +968,7 @@ router.post('/verify-email', async (req, res) => {
     await db.execute({ sql: 'UPDATE users SET email_verified = 1, email_verify_code = NULL, email_verify_expires_at = NULL WHERE id = ?', args: [user.id] });
     invalidateUser(user.id);
     const fresh = await db.execute({ sql: 'SELECT * FROM users WHERE id = ?', args: [user.id] });
-    sendSession(res, fresh.rows[0]);
+    await sendSession(res, fresh.rows[0], {}, req);
   } catch (err) {
     res.status(500).json({ success: false, error: 'Doğrulama yapılamadı.' });
   }
@@ -971,6 +1044,92 @@ router.post('/telegram/unlink', async (req, res) => {
     res.json({ success: true, message: 'Telegram bağlantısı başarıyla kaldırıldı.' });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ── Oturum ve Cihaz Listesi (Uzaktan Çıkış) ───────────────────
+// GET /api/auth/sessions
+router.get('/sessions', async (req, res) => {
+  try {
+    const uid = req.authUserId;
+    if (!uid) return res.status(401).json({ success: false, error: 'Oturum gerekli' });
+
+    const r = await db.execute({
+      sql: `SELECT id, device_name, os, browser, ip, last_active_at, created_at, is_revoked
+            FROM user_sessions
+            WHERE user_id = ? AND is_revoked = 0
+            ORDER BY datetime(last_active_at) DESC`,
+      args: [uid]
+    });
+
+    const sessions = r.rows.map(s => ({
+      id: s.id,
+      deviceName: s.device_name || 'Bilinmeyen Cihaz',
+      os: s.os || 'Bilinmiyor',
+      browser: s.browser || 'Tarayıcı',
+      ip: s.ip || '—',
+      lastActiveAt: s.last_active_at,
+      createdAt: s.created_at,
+      isCurrent: Boolean(req.authSessionId && s.id === req.authSessionId)
+    }));
+
+    res.json({
+      success: true,
+      sessions,
+      currentSessionId: req.authSessionId || null
+    });
+  } catch (err) {
+    console.error('[AUTH] Sessions error:', err.message);
+    res.status(500).json({ success: false, error: 'Oturumlar listelenemedi' });
+  }
+});
+
+// POST /api/auth/sessions/revoke/:sessionId
+router.post('/sessions/revoke/:sessionId', async (req, res) => {
+  try {
+    const uid = req.authUserId;
+    const { sessionId } = req.params;
+    if (!sessionId) return res.status(400).json({ success: false, error: 'Oturum kimliği gerekli' });
+
+    await db.execute({
+      sql: `UPDATE user_sessions SET is_revoked = 1 WHERE id = ? AND user_id = ?`,
+      args: [sessionId, uid]
+    });
+    revokeSession(sessionId);
+
+    res.json({ success: true, message: 'Cihaz oturumu başarıyla kapatıldı.' });
+  } catch (err) {
+    console.error('[AUTH] Revoke session error:', err.message);
+    res.status(500).json({ success: false, error: 'Oturum kapatılamadı' });
+  }
+});
+
+// POST /api/auth/sessions/revoke-others
+router.post('/sessions/revoke-others', async (req, res) => {
+  try {
+    const uid = req.authUserId;
+    const currentSid = req.authSessionId;
+
+    if (currentSid) {
+      await db.execute({
+        sql: `UPDATE user_sessions SET is_revoked = 1 WHERE user_id = ? AND id != ?`,
+        args: [uid, currentSid]
+      });
+    } else {
+      await db.execute({
+        sql: `UPDATE user_sessions SET is_revoked = 1 WHERE user_id = ?`,
+        args: [uid]
+      });
+    }
+
+    // Oturum kimliği taşımayan (eski) anahtarlar da geçersiz olsun
+    await db.execute({ sql: 'UPDATE users SET token_version = COALESCE(token_version, 0) + 1 WHERE id = ?', args: [uid] });
+    invalidateUser(uid);
+    const fresh = (await db.execute({ sql: 'SELECT * FROM users WHERE id = ?', args: [uid] })).rows[0];
+    res.json({ success: true, message: 'Diğer tüm cihaz oturumları kapatıldı.', user: formatUser(fresh), token: signToken(fresh, currentSid) });
+  } catch (err) {
+    console.error('[AUTH] Revoke others error:', err.message);
+    res.status(500).json({ success: false, error: 'Oturumlar kapatılamadı' });
   }
 });
 
