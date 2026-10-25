@@ -69,15 +69,18 @@ async function resetFailures(user, kind) {
 const genCode = () => String(crypto.randomInt(100000, 1000000)); // tahmin edilemez 6 haneli kod
 
 async function sendVerificationEmail(email, code) {
+  // Sade işlem e-postası: Gmail'de "Birincil" sekmeye düşmesi için süslemesiz
   return sendMail({
     to: email,
-    subject: 'PayPulse e-posta doğrulama kodun',
-    html: `<div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;padding:24px;background:#070b1a;color:#e6ecff;border-radius:16px;border:1px solid #1e2a55">
-      <h2 style="color:#5ee7ff;margin-top:0">PayPulse'a hoş geldin!</h2>
-      <p>Hesabını doğrulamak için bu kodu uygulamaya gir:</p>
-      <p style="font-size:32px;font-weight:bold;letter-spacing:8px;color:#fff;background:#0d1430;padding:16px;border-radius:12px;text-align:center">${code}</p>
-      <p style="color:#8ea0d8;font-size:13px">Kod 30 dakika geçerlidir. Bu kaydı sen yapmadıysan e-postayı yok sayabilirsin.</p>
+    subject: `PayPulse doğrulama kodun: ${code}`,
+    html: `<div style="font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.5;color:#222">
+      <p>Merhaba,</p>
+      <p>PayPulse hesabını doğrulamak için bu kodu uygulamaya gir:</p>
+      <p style="font-size:26px;font-weight:bold;letter-spacing:4px;margin:16px 0">${code}</p>
+      <p>Kod 30 dakika geçerlidir. Bu kaydı sen yapmadıysan bu e-postayı yok sayabilirsin.</p>
+      <p>PayPulse</p>
     </div>`,
+    text: `Merhaba,\n\nPayPulse hesabını doğrulamak için bu kodu uygulamaya gir: ${code}\n\nKod 30 dakika geçerlidir. Bu kaydı sen yapmadıysan bu e-postayı yok sayabilirsin.\n\nPayPulse`,
   });
 }
 
@@ -720,19 +723,18 @@ router.put('/profile', async (req, res) => {
 
 // ─── E-posta ile Doğrulama Kodu Gönderici ──────────────────────
 async function sendResetEmail(email, code) {
-  // Ortak mailer: Resend / Gmail, düz metin sürümü ve spam'e karşı başlıklarla
+  // Sade işlem e-postası: Gmail'de "Birincil" sekmeye düşmesi için süslemesiz
   return sendMail({
     to: email,
-    subject: 'PayPulse şifre sıfırlama kodu',
-    html: `<div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;padding:24px;background:#0f172a;color:#f8fafc;border-radius:16px;border:1px solid #334155;">
-      <h2 style="color:#38bdf8;text-align:center;margin-top:0;">PayPulse</h2>
-      <p style="font-size:15px;color:#cbd5e1;text-align:center;">Hesabınızın şifresini yenilemek için doğrulama kodunuz:</p>
-      <div style="background:#1e293b;padding:18px;border-radius:12px;text-align:center;margin:24px 0;border:1px dashed #38bdf8;">
-        <span style="font-size:34px;font-weight:bold;letter-spacing:8px;color:#38bdf8;">${code}</span>
-      </div>
-      <p style="font-size:13px;color:#94a3b8;text-align:center;line-height:1.5;">Bu kod 10 dakika geçerlidir. Bu işlemi siz istemediyseniz bu e-postayı dikkate almayın.</p>
+    subject: `PayPulse şifre sıfırlama kodun: ${code}`,
+    html: `<div style="font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.5;color:#222">
+      <p>Merhaba,</p>
+      <p>PayPulse şifreni yenilemek için bu kodu uygulamaya gir:</p>
+      <p style="font-size:26px;font-weight:bold;letter-spacing:4px;margin:16px 0">${code}</p>
+      <p>Kod 10 dakika geçerlidir. Bu isteği sen yapmadıysan bu e-postayı yok sayabilirsin; şifren değişmez.</p>
+      <p>PayPulse</p>
     </div>`,
-    text: `PayPulse şifre sıfırlama kodunuz: ${code}\n\nBu kod 10 dakika geçerlidir. Bu işlemi siz istemediyseniz bu e-postayı dikkate almayın.`,
+    text: `Merhaba,\n\nPayPulse şifreni yenilemek için bu kodu uygulamaya gir: ${code}\n\nKod 10 dakika geçerlidir. Bu isteği sen yapmadıysan bu e-postayı yok sayabilirsin; şifren değişmez.\n\nPayPulse`,
   });
 }
 
