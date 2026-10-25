@@ -62,7 +62,7 @@ async function buildStats(userId, month) {
   const extraOf = (r) => { try { return JSON.parse(r.extra || '{}') || {}; } catch { return {}; } };
   const rowIncome = (r, salaryOrCc) => {
     const x = extraOf(r);
-    return (Number(r.cash) || 0) + salaryOrCc + (Number(x.eft) || 0) + (Number(x.checkIncome) || 0);
+    return (Number(r.cash) || 0) + salaryOrCc + (Number(x.eft) || 0) + (Number(x.checkIncome) || 0) + (Number(x.incomeOther) || 0);
   };
   const sumIncome = (key) => {
     const [y, m] = key.split('-');

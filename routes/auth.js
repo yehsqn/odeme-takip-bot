@@ -71,7 +71,7 @@ const genCode = () => String(crypto.randomInt(100000, 1000000)); // tahmin edile
 async function sendVerificationEmail(email, code) {
   return sendMail({
     to: email,
-    subject: '✉️ PayPulse — E-posta doğrulama kodun',
+    subject: 'PayPulse e-posta doğrulama kodun',
     html: `<div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;padding:24px;background:#070b1a;color:#e6ecff;border-radius:16px;border:1px solid #1e2a55">
       <h2 style="color:#5ee7ff;margin-top:0">PayPulse'a hoş geldin!</h2>
       <p>Hesabını doğrulamak için bu kodu uygulamaya gir:</p>
@@ -720,94 +720,20 @@ router.put('/profile', async (req, res) => {
 
 // ─── E-posta ile Doğrulama Kodu Gönderici ──────────────────────
 async function sendResetEmail(email, code) {
-  const resendKey = process.env.RESEND_API_KEY;
-
-  // ── Resend (birincil yöntem) ──────────────────────────────────
-  if (resendKey) {
-    try {
-      const { Resend } = require('resend');
-      const resend = new Resend(resendKey);
-
-      const { data, error } = await resend.emails.send({
-        from: process.env.MAIL_FROM || 'PayPulse <noreply@sqnova.software>',
-        to: [email],
-        subject: '🔐 PayPulse - Şifre Sıfırlama Kodu',
-        html: `
-          <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto; padding: 24px; background: #0f172a; color: #f8fafc; border-radius: 16px; border: 1px solid #334155;">
-            <h2 style="color: #38bdf8; text-align: center; margin-top: 0;">PayPulse</h2>
-            <p style="font-size: 15px; color: #cbd5e1; text-align: center;">Hesabınızın şifresini yenilemek için doğrulama kodunuz:</p>
-            <div style="background: #1e293b; padding: 18px; border-radius: 12px; text-align: center; margin: 24px 0; border: 1px dashed #38bdf8;">
-              <span style="font-size: 34px; font-weight: bold; letter-spacing: 8px; color: #38bdf8;">${code}</span>
-            </div>
-            <p style="font-size: 13px; color: #94a3b8; text-align: center; line-height: 1.5;">
-              Bu kod <b>10 dakika</b> süreyle geçerlidir.<br/>Eğer bu işlemi siz talep etmediyseniz lütfen bu e-postayı dikkate almayın.
-            </p>
-          </div>
-        `,
-      });
-
-      if (error) {
-        console.error('[AUTH] Resend e-posta hatası:', error);
-        return false;
-      }
-
-      console.log(`[AUTH] Şifre sıfırlama kodu ${email} adresine Resend ile gönderildi. ID: ${data?.id}`);
-      return true;
-    } catch (err) {
-      console.error('[AUTH] Resend SDK hatası:', err.message);
-      return false;
-    }
-  }
-
-  // ── Nodemailer / SMTP (yedek yöntem) ─────────────────────────
-  const smtpUser = process.env.SMTP_USER || process.env.EMAIL_USER;
-  const smtpPass = process.env.SMTP_PASS || process.env.EMAIL_PASS;
-
-  if (smtpUser && smtpPass) {
-    try {
-      const transporter = nodemailer.createTransport({
-        host: 'smtp.gmail.com',
-        port: 465,
-        secure: true,
-        auth: {
-          user: smtpUser,
-          pass: smtpPass,
-        },
-      });
-
-      await transporter.sendMail({
-        from: `"PayPulse Ödeme Takip" <${smtpUser}>`,
-        to: email,
-        subject: '🔐 PayPulse - Şifre Sıfırlama Kodu',
-        html: `
-          <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto; padding: 24px; background: #0f172a; color: #f8fafc; border-radius: 16px; border: 1px solid #334155;">
-            <h2 style="color: #38bdf8; text-align: center; margin-top: 0;">PayPulse</h2>
-            <p style="font-size: 15px; color: #cbd5e1; text-align: center;">Hesabınızın şifresini yenilemek için doğrulama kodunuz:</p>
-            <div style="background: #1e293b; padding: 18px; border-radius: 12px; text-align: center; margin: 24px 0; border: 1px dashed #38bdf8;">
-              <span style="font-size: 34px; font-weight: bold; letter-spacing: 8px; color: #38bdf8;">${code}</span>
-            </div>
-            <p style="font-size: 13px; color: #94a3b8; text-align: center; line-height: 1.5;">
-              Bu kod <b>10 dakika</b> süreyle geçerlidir.<br/>Eğer bu işlemi siz talep etmediyseniz lütfen bu e-postayı dikkate almayın.
-            </p>
-          </div>
-        `,
-      });
-      console.log(`[AUTH] Şifre sıfırlama kodu ${email} adresine SMTP ile gönderildi.`);
-      return true;
-    } catch (err) {
-      console.error('[AUTH] SMTP e-posta hatası:', err.message);
-      return false;
-    }
-  }
-
-  // ── Yapılandırma yok — sadece log ────────────────────────────
-  console.log(`--------------------------------------------------`);
-  console.log(`[PASSWORD RESET - E-POSTA KONFİGÜRASYONU EKSİK]`);
-  console.log(`Hedef E-Posta : ${email}`);
-  console.log(`Doğrulama Kodu: ${code}`);
-  console.log(`Not: .env dosyasına RESEND_API_KEY veya SMTP_USER/SMTP_PASS ekleyiniz.`);
-  console.log(`--------------------------------------------------`);
-  return false;
+  // Ortak mailer: Resend / Gmail, düz metin sürümü ve spam'e karşı başlıklarla
+  return sendMail({
+    to: email,
+    subject: 'PayPulse şifre sıfırlama kodu',
+    html: `<div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;padding:24px;background:#0f172a;color:#f8fafc;border-radius:16px;border:1px solid #334155;">
+      <h2 style="color:#38bdf8;text-align:center;margin-top:0;">PayPulse</h2>
+      <p style="font-size:15px;color:#cbd5e1;text-align:center;">Hesabınızın şifresini yenilemek için doğrulama kodunuz:</p>
+      <div style="background:#1e293b;padding:18px;border-radius:12px;text-align:center;margin:24px 0;border:1px dashed #38bdf8;">
+        <span style="font-size:34px;font-weight:bold;letter-spacing:8px;color:#38bdf8;">${code}</span>
+      </div>
+      <p style="font-size:13px;color:#94a3b8;text-align:center;line-height:1.5;">Bu kod 10 dakika geçerlidir. Bu işlemi siz istemediyseniz bu e-postayı dikkate almayın.</p>
+    </div>`,
+    text: `PayPulse şifre sıfırlama kodunuz: ${code}\n\nBu kod 10 dakika geçerlidir. Bu işlemi siz istemediyseniz bu e-postayı dikkate almayın.`,
+  });
 }
 
 

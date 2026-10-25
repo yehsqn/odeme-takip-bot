@@ -1,0 +1,91 @@
+/**
+ * Yönetici işlemleri (yalnızca admin).
+ * POST /api/admin/broadcast-update — yeni sürüm duyurusu: herkese uygulama içi bildirim,
+ *   isteğe bağlı olarak doğrulanmış e-postalara (arka planda, sırayla).
+ * GET  /api/admin/broadcasts       — geçmiş duyurular
+ */
+const express = require('express');
+const router = express.Router();
+const crypto = require('crypto');
+const { db } = require('../db/turso');
+const { requireAdmin } = require('../middleware/session');
+const { sendToUser } = require('../websocket');
+const { sendMail } = require('../mailer');
+
+router.use(requireAdmin);
+
+const VERSION_RE = /^\d{1,3}\.\d{1,3}\.\d{1,4}$/;
+const DOWNLOAD_URL = process.env.DOWNLOAD_PAGE_URL || 'https://github.com/yehsqn/paypulse-releases/releases/latest';
+const esc = (s) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+async function sendUpdateEmails(rows, version, notes, broadcastId) {
+  let sent = 0;
+  const subject = `PayPulse ${version} yayında`;
+  const html = `<div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto;padding:24px;background:#0f172a;color:#f8fafc;border-radius:16px;border:1px solid #334155">
+    <h2 style="color:#38bdf8;margin-top:0">PayPulse ${esc(version)} yayında</h2>
+    <p style="color:#cbd5e1;white-space:pre-line">${esc(notes)}</p>
+    <p><a href="${esc(DOWNLOAD_URL)}" style="display:inline-block;background:#3b82f6;color:#fff;padding:10px 18px;border-radius:10px;text-decoration:none">Yeni sürümü indir</a></p>
+    <p style="color:#94a3b8;font-size:12px">Masaüstü uygulaması açıldığında kendiliğinden güncellenir; telefonda Google Play'den güncelleyebilirsin.
+    Bu duyuruları almak istemiyorsan bu e-postayı yanıtlaman yeterli.</p>
+  </div>`;
+  const text = `PayPulse ${version} yayında\n\n${notes}\n\nYeni sürüm: ${DOWNLOAD_URL}\n\nMasaüstü uygulaması açıldığında kendiliğinden güncellenir; telefonda Google Play'den güncelleyebilirsin.`;
+  for (const u of rows) {
+    if (await sendMail({ to: u.email, subject, html, text })) sent++;
+    await sleep(700); // sağlayıcı sınırına takılmamak ve toplu gönderim görünmemek için
+  }
+  await db.execute({ sql: 'UPDATE app_broadcasts SET email_sent = ? WHERE id = ?', args: [sent, broadcastId] }).catch(() => {});
+  console.log(`[ADMIN] ${version} duyurusu ${sent}/${rows.length} e-postaya gönderildi.`);
+}
+
+router.post('/broadcast-update', async (req, res) => {
+  try {
+    const version = String(req.body?.version || '').trim();
+    const notes = String(req.body?.notes || '').trim().slice(0, 600) || 'Yeni sürüm hazır. Yenilikler ve düzeltmeler için güncelleyin.';
+    const sendEmail = req.body?.sendEmail === true;
+    const force = req.body?.force === true;
+    if (!VERSION_RE.test(version)) return res.status(400).json({ success: false, error: 'Sürüm numarası 1.2.3 biçiminde olmalı.' });
+
+    const prev = await db.execute({ sql: 'SELECT id FROM app_broadcasts WHERE version = ?', args: [version] });
+    if (prev.rows.length && !force) {
+      return res.status(409).json({ success: false, alreadySent: true, error: `${version} için daha önce duyuru gönderilmiş.` });
+    }
+
+    const users = (await db.execute('SELECT id, email, email_verified FROM users')).rows;
+    const id = crypto.randomBytes(12).toString('hex');
+    await db.execute({
+      sql: `INSERT INTO app_broadcasts (id, version, notes, sent_by, recipients, email_requested, email_sent, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, 0, datetime('now'))`,
+      args: [id, version, notes, req.authUserId, users.length, sendEmail ? 1 : 0],
+    });
+
+    // Uygulama içi: çevrimiçiyse anında, değilse bildirimler listesinde bekler
+    const title = `🚀 PayPulse ${version} yayında`;
+    const body = `${notes}\n\nMasaüstü sürüm kendiliğinden güncellenir; telefonda Google Play'den güncelleyebilirsin.`;
+    for (let i = 0; i < users.length; i += 25) {
+      await Promise.all(users.slice(i, i + 25).map(u => sendToUser(u.id, { type: 'APP_UPDATE', title, body }).catch(() => {})));
+    }
+
+    const emailTargets = sendEmail ? users.filter(u => u.email && Number(u.email_verified) !== 0) : [];
+    if (emailTargets.length) {
+      // Yanıtı bekletme: e-postalar arka planda sırayla gider
+      sendUpdateEmails(emailTargets, version, notes, id).catch(err => console.error('[ADMIN] E-posta duyuru hatası:', err.message));
+    }
+
+    res.json({ success: true, inApp: users.length, emailQueued: emailTargets.length });
+  } catch (err) {
+    console.error('[ADMIN] Duyuru hatası:', err.message);
+    res.status(500).json({ success: false, error: 'Duyuru gönderilemedi.' });
+  }
+});
+
+router.get('/broadcasts', async (req, res) => {
+  try {
+    const r = await db.execute('SELECT version, notes, recipients, email_requested, email_sent, created_at FROM app_broadcasts ORDER BY datetime(created_at) DESC LIMIT 20');
+    res.json({ success: true, broadcasts: r.rows });
+  } catch (err) {
+    res.status(500).json({ success: false, error: 'Duyurular alınamadı.' });
+  }
+});
+
+module.exports = router;

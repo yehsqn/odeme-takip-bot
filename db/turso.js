@@ -298,6 +298,18 @@ async function initDb() {
       created_at       TEXT DEFAULT (datetime('now'))
     )`,
     `CREATE INDEX IF NOT EXISTS idx_user_reports ON user_reports(reported_user_id)`,
+
+    // ── Yönetici sürüm duyuruları
+    `CREATE TABLE IF NOT EXISTS app_broadcasts (
+      id              TEXT PRIMARY KEY,
+      version         TEXT NOT NULL,
+      notes           TEXT,
+      sent_by         TEXT,
+      recipients      INTEGER DEFAULT 0,
+      email_requested INTEGER DEFAULT 0,
+      email_sent      INTEGER DEFAULT 0,
+      created_at      TEXT DEFAULT (datetime('now'))
+    )`,
   ]);
 
   // Migration: Mevcut DB'ye yeni sütunlar ekle (varsa atlar)
