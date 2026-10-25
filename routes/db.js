@@ -1,7 +1,11 @@
 const express = require('express');
 const router = express.Router();
 // Gelir-gider satırında sütunu olmayan, saklanmasına izin verilen alanlar
-const INCOME_EXTRA_FIELDS = { eft: 'number', checkIncome: 'number', selectedCategory: 'string' };
+const INCOME_EXTRA_FIELDS = {
+  eft: 'number', checkIncome: 'number', selectedCategory: 'string',
+  // Kurumsal gün defteri: Diğer gelir; Nakit / Kart / Diğer gider
+  incomeOther: 'number', expCash: 'number', expCard: 'number', expOther: 'number',
+};
 const pickIncomeExtra = (data) => {
   const out = {};
   for (const [k, t] of Object.entries(INCOME_EXTRA_FIELDS)) {

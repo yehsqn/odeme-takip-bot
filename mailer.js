@@ -1,12 +1,27 @@
 const nodemailer = require('nodemailer');
 
 /**
+ * Spam filtrelerine karşı: her e-postaya düz metin sürümü, yanıtlanabilir adres ve
+ * "abonelikten çık" başlığı eklenir. Konu satırlarında emoji kullanılmaz.
+ */
+const htmlToText = (html) => String(html || '')
+  .replace(/<(br|\/p|\/div|\/h\d|\/tr|\/li)[^>]*>/gi, '\n')
+  .replace(/<[^>]+>/g, '')
+  .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+  .replace(/[ \t]+/g, ' ').replace(/\n\s*\n+/g, '\n\n').trim();
+const replyTo = () => process.env.MAIL_REPLY_TO || 'yehsanefe20@gmail.com';
+const unsubscribeHeaders = () => ({
+  'List-Unsubscribe': `<mailto:${replyTo()}?subject=unsubscribe>`,
+});
+
+/**
  * Gmail (SMTP) üzerinden e-posta gönderir.
  * Gerekli ortam değişkenleri: SMTP_USER (Gmail adresi) + SMTP_PASS (Google "Uygulama şifresi").
  * Tanımlı değilse RESEND_API_KEY yedek olarak denenir.
  * @returns {Promise<boolean>}
  */
-async function sendMail({ to, subject, html, attachments = [] }) {
+async function sendMail({ to, subject, html, text, attachments = [] }) {
+  const plain = text || htmlToText(html);
   // attachments: [{ filename, content: Buffer, contentType, cid? }]
   const smtpUser = process.env.SMTP_USER || process.env.EMAIL_USER;
   const smtpPass = process.env.SMTP_PASS || process.env.EMAIL_PASS;
@@ -24,6 +39,9 @@ async function sendMail({ to, subject, html, attachments = [] }) {
         to,
         subject,
         html,
+        text: plain,
+        replyTo: replyTo(),
+        headers: unsubscribeHeaders(),
         attachments,
       });
       return true;
@@ -42,6 +60,9 @@ async function sendMail({ to, subject, html, attachments = [] }) {
         to: [to],
         subject,
         html,
+        text: plain,
+        replyTo: replyTo(),
+        headers: unsubscribeHeaders(),
         attachments: attachments.map(a => ({ filename: a.filename, content: a.content.toString('base64') })),
       });
       if (error) {
@@ -98,9 +119,9 @@ function sendOverdueEmail(email, items) {
 
   return sendMail({
     to: email,
-    subject: `⚠️ PayPulse - ${items.length} Gecikmiş Ödemeniz Var`,
+    subject: `PayPulse: ${items.length} gecikmiş ödemeniz var`,
     html,
   });
 }
 
-module.exports = { sendMail, sendOverdueEmail };
+module.exports = { sendMail, sendOverdueEmail, htmlToText };

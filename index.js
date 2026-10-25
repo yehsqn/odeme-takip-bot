@@ -20,6 +20,7 @@ const gameRoutes = require('./routes/game');
 const walletsRoutes = require('./routes/wallets');
 const portfolioRoutes = require('./routes/portfolio');
 const socialRoutes = require('./routes/social');
+const adminRoutes = require('./routes/admin');
 const subscriptionRoutes = require('./routes/subscription');
 const dbRoutes = require('./routes/db');
 const backupRoutes = require('./routes/backup');
@@ -139,6 +140,7 @@ app.use('/api/game', gameRoutes);
 app.use('/api/wallets', walletsRoutes);
 app.use('/api/portfolio', portfolioRoutes);
 app.use('/api/social', socialRoutes);
+app.use('/api/admin', adminRoutes);
 
 // Error Reporting Endpoint
 app.post('/api/errors', errorLimiter, async (req, res) => {
