@@ -453,6 +453,15 @@ router.post('/set-pin', async (req, res) => {
     if (pin && !/^\d{4}$/.test(String(pin))) {
       return res.status(400).json({ success: false, error: 'PIN 4 haneli rakam olmalı.' });
     }
+    // Mevcut PIN varsa değiştirmek/kaldırmak için o PIN gerekir (kilitsiz bırakılan telefonda
+    // başkası PIN'i değiştirip biyometriğe kendi parmak izini bağlayamasın). Deneme sınırı geçerli.
+    const cur = (await db.execute({ sql: 'SELECT * FROM users WHERE id = ?', args: [userId] })).rows[0];
+    if (!cur) return res.status(404).json({ success: false, error: 'Kullanıcı bulunamadı' });
+    if (cur.pin) {
+      if (rejectIfLocked(res, cur, 'pin')) return;
+      if (!(await checkSecret(cur.pin, req.body.currentPin))) return recordFailure(res, cur, 'pin');
+      await resetFailures(cur, 'pin');
+    }
     const pinHash = pin ? await bcrypt.hash(String(pin), 10) : null;
     await db.execute({ sql: 'UPDATE users SET pin = ? WHERE id = ?', args: [pinHash, userId] });
     res.json({ success: true });
