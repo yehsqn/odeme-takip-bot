@@ -179,6 +179,7 @@ function formatUser(row) {
     subscriptionExpiry: row.subscription_expiry || null,
     aiAnalysisTokens: isActive ? 999 : (row.ai_analysis_tokens ?? 1),
     displayName: row.display_name || '',
+    createdAt: row.created_at || null,
     avatar: row.avatar || '',
     friendCode,
     // Müşteri tipi bilgileri
