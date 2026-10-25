@@ -31,7 +31,7 @@ async function sendUpdateEmails(rows, version, notes, broadcastId) {
   </div>`;
   const text = `PayPulse ${version} yayında\n\n${notes}\n\nYeni sürüm: ${DOWNLOAD_URL}\n\nMasaüstü uygulaması açıldığında kendiliğinden güncellenir; telefonda Google Play'den güncelleyebilirsin.`;
   for (const u of rows) {
-    if (await sendMail({ to: u.email, subject, html, text })) sent++;
+    if (await sendMail({ to: u.email, subject, html, text, bulk: true })) sent++;
     await sleep(700); // sağlayıcı sınırına takılmamak ve toplu gönderim görünmemek için
   }
   await db.execute({ sql: 'UPDATE app_broadcasts SET email_sent = ? WHERE id = ?', args: [sent, broadcastId] }).catch(() => {});
