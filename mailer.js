@@ -24,6 +24,10 @@ async function trySmtp({ to, subject, html, plain, attachments }) {
       port: 465,
       secure: true,
       auth: { user: smtpUser, pass: smtpPass },
+      // SMTP portu engelliyse (ör. barındırma) dakikalarca beklemeden Resend'e geç
+      connectionTimeout: 8000,
+      greetingTimeout: 8000,
+      socketTimeout: 15000,
     });
     await transporter.sendMail({
       from: `"PayPulse" <${smtpUser}>`,
