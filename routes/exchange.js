@@ -44,7 +44,9 @@ async function fetchRates() {
 // Full GenelPara data (currencies + gold)
 async function fetchAllRates(force = false) {
   const now = Date.now();
-  if (!force && allRatesCache.data && (now - allRatesCache.lastUpdated < ALL_CACHE_MS)) {
+  // Zorla yenileme de en fazla 30 sn'de bir dış servise gider (herkese açık uç, dış API'yi yormasın)
+  const fresh = force ? 30 * 1000 : ALL_CACHE_MS;
+  if (allRatesCache.data && (now - allRatesCache.lastUpdated < fresh)) {
     return allRatesCache.data;
   }
 

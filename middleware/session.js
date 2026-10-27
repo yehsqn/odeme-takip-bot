@@ -170,9 +170,14 @@ async function requireAuth(req, res, next) {
         }
       }
     }
-    // userId gönderilmemişse token sahibinin kimliği kullanılır
-    if (req.body && typeof req.body === 'object' && !Array.isArray(req.body) && req.body.userId === undefined) {
+    // userId gönderilmemiş / boş / null ise token sahibinin kimliği kullanılır
+    // (boş değer "tüm kullanıcılar" anlamına gelecek uçlara sızmasın)
+    const isBlank = (v) => v === undefined || v === null || v === '';
+    if (req.body && typeof req.body === 'object' && !Array.isArray(req.body) && isBlank(req.body.userId)) {
       req.body.userId = user.id;
+    }
+    if (req.query && 'userId' in req.query && isBlank(req.query.userId)) {
+      req.query.userId = user.id;
     }
     next();
   } catch (err) {

@@ -22,6 +22,27 @@ const checkSecret = async (stored, plain) => {
   return v.startsWith('$2') ? bcrypt.compare(String(plain), v) : v === String(plain);
 };
 
+/** Google ile açılmış hesabın yer tutucu "şifresi" (google_oauth_<zaman>) — şifre olarak kabul edilmez */
+const isGooglePlaceholder = (stored) => !stored || String(stored).startsWith('google_oauth_');
+
+/** Hesap şifresini doğrular; Google yer tutucusu tahmin edilerek giriş yapılamaz */
+const checkPassword = async (stored, plain) => {
+  if (isGooglePlaceholder(stored) || typeof plain !== 'string' || !plain) return false;
+  return checkSecret(stored, plain);
+};
+
+const RESET_MAX_ATTEMPTS = 5;
+/** Hatalı sıfırlama kodu denemesini sayar; sınır aşılınca kod geçersiz olur (6 haneli kod kaba kuvvetle bulunamasın) */
+async function recordResetFailure(user) {
+  const attempts = (Number(user.reset_password_attempts) || 0) + 1;
+  if (attempts >= RESET_MAX_ATTEMPTS) {
+    await db.execute({ sql: 'UPDATE users SET reset_password_code = NULL, reset_password_expires_at = NULL, reset_password_attempts = 0 WHERE id = ?', args: [user.id] });
+    return true;
+  }
+  await db.execute({ sql: 'UPDATE users SET reset_password_attempts = ? WHERE id = ?', args: [attempts, user.id] });
+  return false;
+}
+
 
 // ── Hesap bazlı deneme sınırı (PIN ve gelir-gider şifresi) ─────────
 // 5 hatalı denemede 5 dk kilit; 10 hatada oturum kapatılır, şifreyle yeniden giriş gerekir.
@@ -207,23 +228,18 @@ router.post('/login', async (req, res) => {
     const user = result.rows[0];
     if (!user) return res.status(401).json({ success: false, error: 'E-posta veya şifre hatalı' });
 
-    let isPasswordValid = false;
-    // Bcrypt hash kontrolü
-    if (user.password && (user.password.startsWith('$2a$') || user.password.startsWith('$2b$'))) {
-      isPasswordValid = await bcrypt.compare(password, user.password);
-    } else {
-      // Legacy düz metin şifre kontrolü ve otomatik bcrypt'e yükseltme (re-hash)
-      if (user.password === password) {
-        isPasswordValid = true;
-        try {
-          const newHash = await bcrypt.hash(password, 10);
-          await db.execute({
-            sql: 'UPDATE users SET password = ? WHERE id = ?',
-            args: [newHash, user.id]
-          });
-        } catch (hashErr) {
-          console.error('[AUTH] Auto-rehash failed:', hashErr.message);
-        }
+    // Bcrypt hash veya eski düz metin şifre (Google yer tutucusu asla kabul edilmez)
+    const isPasswordValid = await checkPassword(user.password, password);
+    if (isPasswordValid && !String(user.password).startsWith('$2')) {
+      // Legacy düz metin şifreyi otomatik bcrypt'e yükselt (re-hash)
+      try {
+        const newHash = await bcrypt.hash(password, 10);
+        await db.execute({
+          sql: 'UPDATE users SET password = ? WHERE id = ?',
+          args: [newHash, user.id]
+        });
+      } catch (hashErr) {
+        console.error('[AUTH] Auto-rehash failed:', hashErr.message);
       }
     }
 
@@ -430,15 +446,15 @@ router.post('/google', async (req, res) => {
         console.error('🔍 [Google Auth Debug] Token payload.iss:', tokenIss);
         console.error('🎯 [Google Auth Debug] Backend beklenen geçerli audience listesi:', validAudiences);
 
+        // Ayrıntılar yalnızca sunucu loguna; istemciye izin verilen istemci kimlikleri sızdırılmaz
         return res.status(401).json({
           success: false,
-          error: 'Google kimlik doğrulama hatası (Audience Uyuşmazlığı)',
-          details: verifyErr.message,
-          debug: {
-            tokenAudience: tokenAud || 'Bilinmiyor',
-            allowedAudiences: validAudiences
-          }
+          error: 'Google kimlik doğrulama hatası (Audience Uyuşmazlığı)'
         });
+      }
+      // Doğrulanmamış Google e-postası başkasının hesabına bağlanamasın
+      if (!payload?.email || payload.email_verified === false || payload.email_verified === 'false') {
+        return res.status(401).json({ success: false, error: 'Google e-postası doğrulanmamış.' });
       }
     } else {
       // Web popup akışı: access token — Google'dan doğrula (aud geçerli audience listemizde olmalı)
@@ -470,7 +486,7 @@ router.post('/google', async (req, res) => {
       const id = genId();
       await db.execute({
         sql: `INSERT INTO users (id, email, password, google_id, display_name, avatar, customer_type) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        args: [id, email, 'google_oauth_' + Date.now(), payload.sub, payload.name || '', payload.picture || '', CUSTOMER_TYPE.INDIVIDUAL]
+        args: [id, email, 'google_oauth_' + crypto.randomBytes(16).toString('hex'), payload.sub, payload.name || '', payload.picture || '', CUSTOMER_TYPE.INDIVIDUAL]
       });
 
       const now = new Date().toISOString();
@@ -498,7 +514,18 @@ router.post('/google', async (req, res) => {
     }
 
     if (Number(user.email_verified) === 0) {
-      await db.execute({ sql: 'UPDATE users SET email_verified = 1, email_verify_code = NULL WHERE id = ?', args: [user.id] });
+      // E-postası hiç doğrulanmamış hesap: şifresini bu e-postanın sahibi olmayan biri koymuş olabilir
+      // (önceden kayıt olup sahibinin Google ile girmesini bekleme saldırısı). Gerçek sahip Google ile
+      // kanıtladığı için o şifre ve açık oturumlar geçersiz kılınır; isterse "şifremi unuttum" ile yeni şifre koyar.
+      await db.execute({
+        sql: `UPDATE users SET email_verified = 1, email_verify_code = NULL,
+                password = CASE WHEN password LIKE 'google_oauth_%' THEN password ELSE ? END,
+                token_version = COALESCE(token_version, 0) + 1
+              WHERE id = ?`,
+        args: ['google_oauth_' + crypto.randomBytes(16).toString('hex'), user.id]
+      });
+      invalidateUser(user.id);
+      user = (await db.execute({ sql: 'SELECT * FROM users WHERE id = ?', args: [user.id] })).rows[0];
     }
     const formatted = formatUser(user);
     formatted.displayName = formatted.displayName || payload.name || '';
@@ -628,13 +655,7 @@ router.post('/change-password', async (req, res) => {
     const user = result.rows[0];
     if (!user) return res.status(404).json({ success: false, error: 'Kullanıcı bulunamadı' });
 
-    let isMatch = false;
-    if (user.password && (user.password.startsWith('$2a$') || user.password.startsWith('$2b$'))) {
-      isMatch = await bcrypt.compare(currentPassword, user.password);
-    } else {
-      isMatch = (user.password === currentPassword);
-    }
-
+    const isMatch = await checkPassword(user.password, currentPassword);
     if (!isMatch) return res.status(401).json({ success: false, error: 'Mevcut şifre hatalı' });
 
     const hashedNew = await bcrypt.hash(newPassword, 10);
@@ -706,8 +727,16 @@ router.put('/profile', async (req, res) => {
     const user = checkUser.rows[0];
     if (!user) return res.status(404).json({ success: false, error: 'Kullanıcı bulunamadı' });
 
+    // Avatar yalnızca resim data URL'si veya https adresi olabilir (en fazla ~700 KB); ad en fazla 60 karakter
+    if (avatar !== undefined && avatar !== '' && (typeof avatar !== 'string' || avatar.length > 700000
+        || !/^(data:image\/(jpeg|png|webp|gif|svg\+xml)[;,]|https:\/\/)/i.test(avatar))) {
+      return res.status(400).json({ success: false, error: 'Geçersiz profil resmi.' });
+    }
+    if (displayName !== undefined && typeof displayName !== 'string') {
+      return res.status(400).json({ success: false, error: 'Geçersiz görünen ad.' });
+    }
     const newAvatar = avatar !== undefined ? avatar : (user.avatar || '');
-    const newDisplayName = displayName !== undefined ? displayName.trim() : (user.display_name || '');
+    const newDisplayName = displayName !== undefined ? displayName.trim().slice(0, 60) : (user.display_name || '');
 
     await db.execute({
       sql: 'UPDATE users SET avatar = ?, display_name = ? WHERE id = ?',
@@ -762,7 +791,7 @@ router.post('/forgot-password', async (req, res) => {
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
 
     await db.execute({
-      sql: 'UPDATE users SET reset_password_code = ?, reset_password_expires_at = ? WHERE id = ?',
+      sql: 'UPDATE users SET reset_password_code = ?, reset_password_expires_at = ?, reset_password_attempts = 0 WHERE id = ?',
       args: [code, expiresAt, user.id]
     });
 
@@ -794,7 +823,7 @@ router.post('/forgot-password', async (req, res) => {
     });
   } catch (err) {
     console.error('Forgot Password Error:', err.message);
-    res.status(500).json({ success: false, error: 'İşlem başarısız: ' + err.message });
+    res.status(500).json({ success: false, error: 'İşlem başarısız. Lütfen tekrar deneyin.' });
   }
 });
 
@@ -804,18 +833,21 @@ router.post('/verify-reset-code', async (req, res) => {
     const { email, code } = req.body;
     if (!email || !code) return res.status(400).json({ success: false, error: 'E-posta ve kod gerekli' });
 
-    const normalizedEmail = email.toLowerCase().trim();
+    const normalizedEmail = String(email).toLowerCase().trim();
     const result = await db.execute({
-      sql: 'SELECT id, reset_password_code, reset_password_expires_at FROM users WHERE email = ?',
+      sql: 'SELECT id, reset_password_code, reset_password_expires_at, reset_password_attempts FROM users WHERE email = ?',
       args: [normalizedEmail]
     });
     const user = result.rows[0];
 
-    if (!user) {
+    if (!user || !user.reset_password_code) {
       return res.status(400).json({ success: false, error: 'Girdiğiniz doğrulama kodu hatalı.' });
     }
 
-    if (!user.reset_password_code || user.reset_password_code !== code.trim()) {
+    if (user.reset_password_code !== String(code).trim()) {
+      if (await recordResetFailure(user)) {
+        return res.status(400).json({ success: false, codeExpired: true, error: 'Çok fazla hatalı deneme. Lütfen yeni kod isteyin.' });
+      }
       return res.status(400).json({ success: false, error: 'Girdiğiniz doğrulama kodu hatalı.' });
     }
 
@@ -825,7 +857,7 @@ router.post('/verify-reset-code', async (req, res) => {
 
     res.json({ success: true, message: 'Kod doğrulandı.' });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: 'Kod doğrulanamadı.' });
   }
 });
 
@@ -840,19 +872,20 @@ router.post('/reset-password', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Şifre en az 6 karakter olmalıdır.' });
     }
 
-    const normalizedEmail = email.toLowerCase().trim();
+    const normalizedEmail = String(email).toLowerCase().trim();
     const result = await db.execute({
-      sql: 'SELECT id, reset_password_code, reset_password_expires_at FROM users WHERE email = ?',
+      sql: 'SELECT id, reset_password_code, reset_password_expires_at, reset_password_attempts FROM users WHERE email = ?',
       args: [normalizedEmail]
     });
     const user = result.rows[0];
 
-    if (!user) {
-      return res.status(400).json({ success: false, error: 'Girdiğiniz doğrulama kodu hatalı.' });
+    if (!user || !user.reset_password_code) {
+      return res.status(400).json({ success: false, error: 'Geçersiz veya süresi dolmuş kod.' });
     }
 
-    if (!user.reset_password_code || user.reset_password_code !== code.trim()) {
-      return res.status(400).json({ success: false, error: 'Geçersiz veya süresi dolmuş kod.' });
+    if (user.reset_password_code !== String(code).trim()) {
+      const expired = await recordResetFailure(user);
+      return res.status(400).json({ success: false, codeExpired: expired || undefined, error: expired ? 'Çok fazla hatalı deneme. Lütfen yeni kod isteyin.' : 'Geçersiz veya süresi dolmuş kod.' });
     }
 
     if (new Date() > new Date(user.reset_password_expires_at)) {
@@ -861,14 +894,15 @@ router.post('/reset-password', async (req, res) => {
 
     const hashedPassword = await bcrypt.hash(newPassword, 10);
     await db.execute({
-      sql: 'UPDATE users SET password = ?, reset_password_code = NULL, reset_password_expires_at = NULL, email_verified = 1, token_version = COALESCE(token_version, 0) + 1 WHERE id = ?',
+      sql: 'UPDATE users SET password = ?, reset_password_code = NULL, reset_password_expires_at = NULL, reset_password_attempts = 0, email_verified = 1, token_version = COALESCE(token_version, 0) + 1 WHERE id = ?',
       args: [hashedPassword, user.id]
     });
     invalidateUser(user.id);
 
     res.json({ success: true, message: 'Şifreniz başarıyla yenilendi! Yeni şifrenizle giriş yapabilirsiniz.' });
   } catch (err) {
-    res.status(500).json({ success: false, error: 'Şifre sıfırlanamadı: ' + err.message });
+    console.error('[AUTH] Reset password error:', err.message);
+    res.status(500).json({ success: false, error: 'Şifre sıfırlanamadı. Lütfen tekrar deneyin.' });
   }
 });
 
@@ -927,15 +961,13 @@ router.post('/delete-account', async (req, res) => {
     const user = r.rows[0];
     if (!user) return res.status(404).json({ success: false, error: 'Hesap bulunamadı' });
 
-    const isGoogleOnly = !user.password || String(user.password).startsWith('google_oauth_');
+    const isGoogleOnly = isGooglePlaceholder(user.password);
     if (isGoogleOnly) {
       if (String(confirmText || '').trim().toUpperCase() !== 'SİL' && String(confirmText || '').trim().toUpperCase() !== 'SIL') {
         return res.status(400).json({ success: false, error: 'Onaylamak için "SİL" yaz.' });
       }
     } else {
-      const ok = String(user.password).startsWith('$2')
-        ? await bcrypt.compare(String(password || ''), user.password)
-        : user.password === password;
+      const ok = await checkPassword(user.password, password);
       if (!ok) return res.status(401).json({ success: false, error: 'Şifre hatalı' });
     }
 

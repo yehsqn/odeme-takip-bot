@@ -340,6 +340,7 @@ async function initDb() {
     // ── Şifre sıfırlama sütunları
     { table: 'users', name: 'reset_password_code', def: 'TEXT' },
     { table: 'users', name: 'reset_password_expires_at', def: 'TEXT' },
+    { table: 'users', name: 'reset_password_attempts', def: 'INTEGER DEFAULT 0' },
     // ── Sosyal ve Cüzdan migration
     { table: 'users', name: 'friend_code', def: 'TEXT' },
     { table: 'users', name: 'email_verify_attempts', def: 'INTEGER DEFAULT 0' },
