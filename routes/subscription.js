@@ -175,7 +175,7 @@ router.post('/consume-ai-token', async (req, res) => {
 // POST /api/subscription/admin/grant-premium — Admin'in başka kullanıcıya premium vermesi
 router.post('/admin/grant-premium', requireAdmin, async (req, res) => {
   try {
-    const { adminUserId, targetEmail, plan, durationMonths } = req.body;
+    const { adminUserId, targetEmail, plan, durationMonths, durationDays } = req.body;
     if (!adminUserId || !targetEmail) {
       return res.status(400).json({ success: false, error: 'adminUserId ve targetEmail gerekli' });
     }
@@ -209,8 +209,10 @@ router.post('/admin/grant-premium', requireAdmin, async (req, res) => {
       expiry.setFullYear(expiry.getFullYear() + 100);
     } else if (selectedPlan === 'yearly') {
       expiry.setFullYear(expiry.getFullYear() + 1);
+    } else if (durationDays && Number(durationDays) > 0) {
+      expiry.setDate(expiry.getDate() + Number(durationDays));
     } else {
-      expiry.setMonth(expiry.getMonth() + (durationMonths || 1));
+      expiry.setMonth(expiry.getMonth() + (Number(durationMonths) || 1));
     }
 
     await db.execute({

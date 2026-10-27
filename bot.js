@@ -89,6 +89,19 @@ function initTelegramBot() {
         }
       }
     });
+    bot.on('polling_error', (err) => {
+      const msg = err?.message || String(err);
+      if (msg.includes('409 Conflict')) {
+        console.warn('⚠️ [BOT] Telegram Polling 409 Conflict: Başka bir bot örneği aktif. Otomatik yeniden denenecek...');
+      } else {
+        console.warn('⚠️ [BOT] Telegram Polling Hatası:', msg);
+      }
+    });
+
+    bot.on('error', (err) => {
+      console.error('❌ [BOT] Telegram Genel Hata:', err?.message || err);
+    });
+
     console.log('🤖 [BOT] PayPulse Telegram Botu başarıyla başlatıldı (Polling aktif).');
 
     // ── Keep-Alive: Render'ın botu uyutmasını engelle ────────────────────────
@@ -1113,6 +1126,9 @@ function initTelegramBot() {
     bot.on('polling_error', (err) => {
       if (err.code === 'ETELEGRAM' && err.message?.includes('409 Conflict')) {
         console.warn('⚠️ [BOT POLLING] Başka bir bot örneği çalışıyor olabilir (409 Conflict).');
+      } else if (err.code === 'ETELEGRAM' && err.message?.includes('401 Unauthorized')) {
+        console.warn('⚠️ [BOT POLLING] Telegram bot token geçersiz (401 Unauthorized). Polling durduruldu.');
+        bot.stopPolling().catch(() => {});
       } else {
         console.error('[BOT POLLING ERROR]', err.code || '', err.message || err);
       }

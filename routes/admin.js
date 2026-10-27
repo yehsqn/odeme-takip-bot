@@ -8,7 +8,7 @@ const express = require('express');
 const router = express.Router();
 const crypto = require('crypto');
 const { db } = require('../db/turso');
-const { requireAdmin } = require('../middleware/session');
+const { requireAdmin, invalidateUser } = require('../middleware/session');
 const { sendToUser } = require('../websocket');
 const { sendMail } = require('../mailer');
 
@@ -88,4 +88,120 @@ router.get('/broadcasts', async (req, res) => {
   }
 });
 
+// GET /api/admin/users — Kullanıcı listesi (ban ve üyelik detaylarıyla)
+router.get('/users', async (req, res) => {
+  try {
+    const r = await db.execute(`
+      SELECT id, email, display_name, avatar, role, is_premium, premium_expires_at,
+             subscription_type, subscription_expiry, is_banned, ban_reason, banned_at, created_at
+      FROM users
+      ORDER BY datetime(created_at) DESC
+    `);
+    const users = r.rows.map(u => ({
+      id: u.id,
+      email: u.email,
+      displayName: u.display_name || '',
+      avatar: u.avatar || '',
+      role: u.role || 'user',
+      isPremium: Number(u.is_premium) === 1 || u.role === 'admin',
+      subscriptionType: u.subscription_type || 'free',
+      subscriptionExpiry: u.subscription_expiry || u.premium_expires_at || null,
+      isBanned: Number(u.is_banned) === 1,
+      banReason: u.ban_reason || null,
+      bannedAt: u.banned_at || null,
+      createdAt: u.created_at || null
+    }));
+    res.json({ success: true, users });
+  } catch (err) {
+    res.status(500).json({ success: false, error: 'Kullanıcı listesi alınamadı: ' + err.message });
+  }
+});
+
+// POST /api/admin/ban-user — Kullanıcı banlama
+router.post('/ban-user', async (req, res) => {
+  try {
+    const { targetUserId, reason } = req.body;
+    if (!targetUserId) return res.status(400).json({ success: false, error: 'targetUserId gerekli' });
+
+    const banReason = (reason || 'Topluluk ve kullanım kurallarının ihlali.').trim().slice(0, 500);
+
+    // Kullanıcıyı banla ve token_version artırarak mevcut tüm oturumlarını anında düşür
+    await db.execute({
+      sql: `UPDATE users
+            SET is_banned = 1,
+                ban_reason = ?,
+                banned_at = datetime('now'),
+                token_version = COALESCE(token_version, 0) + 1
+            WHERE id = ?`,
+      args: [banReason, targetUserId]
+    });
+    invalidateUser(String(targetUserId)); // önbellekteki eski kullanıcı kaydı 60 sn boyunca geçerli kalmasın
+
+    res.json({ success: true, message: 'Kullanıcı başarıyla banlandı ve tüm oturumları sonlandırıldı.' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: 'Kullanıcı banlanamadı: ' + err.message });
+  }
+});
+
+// POST /api/admin/unban-user — Kullanıcı banını kaldırma
+router.post('/unban-user', async (req, res) => {
+  try {
+    const { targetUserId } = req.body;
+    if (!targetUserId) return res.status(400).json({ success: false, error: 'targetUserId gerekli' });
+
+    await db.execute({
+      sql: `UPDATE users
+            SET is_banned = 0,
+                ban_reason = NULL,
+                banned_at = NULL
+            WHERE id = ?`,
+      args: [targetUserId]
+    });
+    invalidateUser(String(targetUserId));
+
+    res.json({ success: true, message: 'Kullanıcının banı kaldırıldı.' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: 'Ban kaldırılamadı: ' + err.message });
+  }
+});
+
+// GET /api/admin/reports — Gelen şikayetleri listele
+router.get('/reports', async (req, res) => {
+  try {
+    const sql = `
+      SELECT r.id, r.reporter_id, r.reported_user_id, r.reason, r.details, r.message_id, r.status, r.created_at,
+             u1.email as reporter_email, u1.display_name as reporter_name,
+             u2.email as reported_email, u2.display_name as reported_name, u2.is_banned as reported_is_banned
+      FROM user_reports r
+      LEFT JOIN users u1 ON r.reporter_id = u1.id
+      LEFT JOIN users u2 ON r.reported_user_id = u2.id
+      ORDER BY datetime(r.created_at) DESC
+      LIMIT 100
+    `;
+    const result = await db.execute(sql);
+    res.json({ success: true, reports: result.rows });
+  } catch (err) {
+    res.status(500).json({ success: false, error: 'Şikayetler alınamadı: ' + err.message });
+  }
+});
+
+// POST /api/admin/resolve-report — Şikayeti sonuçlandır (resolved, dismissed)
+router.post('/resolve-report', async (req, res) => {
+  try {
+    const { reportId, status } = req.body;
+    if (!reportId) return res.status(400).json({ success: false, error: 'reportId gerekli' });
+
+    const newStatus = ['resolved', 'dismissed', 'pending'].includes(status) ? status : 'resolved';
+    await db.execute({
+      sql: 'UPDATE user_reports SET status = ? WHERE id = ?',
+      args: [newStatus, reportId]
+    });
+
+    res.json({ success: true, message: `Şikayet durumu "${newStatus}" olarak güncellendi.` });
+  } catch (err) {
+    res.status(500).json({ success: false, error: 'İşlem başarısız: ' + err.message });
+  }
+});
+
 module.exports = router;
+

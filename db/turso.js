@@ -5,10 +5,15 @@ const db = createClient({
   authToken: process.env.TURSO_AUTH_TOKEN || '',
 });
 
-async function initDb() {
-  console.log('[DB] Turso tabloları oluşturuluyor...');
+let initDbPromise = null;
 
-  await db.batch([
+function initDb() {
+  if (initDbPromise) return initDbPromise;
+
+  initDbPromise = (async () => {
+    console.log('[DB] Turso bağlantısı ve şeması başlatılıyor...');
+
+    await db.batch([
     // Users tablosu
     `CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(12)))),
@@ -310,6 +315,20 @@ async function initDb() {
       email_sent      INTEGER DEFAULT 0,
       created_at      TEXT DEFAULT (datetime('now'))
     )`,
+
+    // ── Kullanıcı Kendine Notlar Tablosu
+    `CREATE TABLE IF NOT EXISTS user_notes (
+      id          TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(12)))),
+      user_id     TEXT NOT NULL,
+      title       TEXT NOT NULL,
+      content     TEXT NOT NULL,
+      category    TEXT DEFAULT 'Genel',
+      color       TEXT DEFAULT '#6366f1',
+      is_pinned   INTEGER DEFAULT 0,
+      created_at  TEXT DEFAULT (datetime('now')),
+      updated_at  TEXT DEFAULT (datetime('now'))
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_user_notes ON user_notes(user_id)`
   ]);
 
   // Migration: Mevcut DB'ye yeni sütunlar ekle (varsa atlar)
@@ -346,17 +365,43 @@ async function initDb() {
     { table: 'users', name: 'email_verify_attempts', def: 'INTEGER DEFAULT 0' },
     { table: 'payments', name: 'wallet_id', def: 'TEXT' },
     { table: 'daily_incomes', name: 'wallet_id', def: 'TEXT' },
+    // ── Banlama ve moderasyon sütunları
+    { table: 'users', name: 'is_banned', def: 'INTEGER DEFAULT 0' },
+    { table: 'users', name: 'ban_reason', def: 'TEXT' },
+    { table: 'users', name: 'banned_at', def: 'TEXT' },
   ];
 
-  for (const col of columnsToAdd) {
-    try {
-      await db.execute(`ALTER TABLE ${col.table} ADD COLUMN ${col.name} ${col.def}`);
-    } catch {
-      // Sütun zaten varsa hata yutulur
+  // Migration: Tablo şemalarını tek seferde paralel kontrol et (24 ardışık HTTP turu yerine 1 paralel kontrol)
+  try {
+    const tableNames = ['settings', 'users', 'daily_incomes', 'payments'];
+    const infoQueries = tableNames.map(t => db.execute(`PRAGMA table_info('${t}')`));
+    const tableInfos = await Promise.all(infoQueries);
+
+    const existingColumns = {};
+    tableNames.forEach((t, i) => {
+      existingColumns[t] = new Set((tableInfos[i]?.rows || []).map(r => r.name));
+    });
+
+    const missingColumns = columnsToAdd.filter(col => !existingColumns[col.table]?.has(col.name));
+
+    if (missingColumns.length > 0) {
+      console.log(`[DB] ${missingColumns.length} eksik sütun tespit edildi, ekleniyor...`);
+      for (const col of missingColumns) {
+        try {
+          await db.execute(`ALTER TABLE ${col.table} ADD COLUMN ${col.name} ${col.def}`);
+        } catch (e) {
+          console.warn(`[DB] Sütun ekleme uyarısı (${col.table}.${col.name}):`, e.message);
+        }
+      }
     }
+  } catch (err) {
+    console.warn('[DB] Şema optimizasyon kontrolü uyarısı:', err.message);
   }
 
-  console.log('[DB] Turso tabloları hazır ✓');
+    console.log('[DB] Turso tabloları ve indeksler hazır ✓');
+  })();
+
+  return initDbPromise;
 }
 
 // Sanitize: undefined → null (Turso doesn't accept undefined)
@@ -374,8 +419,8 @@ const wrappedDb = {
   execute(stmt) {
     return db.execute(sanitizeStmt(stmt));
   },
-  batch(stmts) {
-    return db.batch(stmts.map(sanitizeStmt));
+  batch(stmts, mode) {
+    return db.batch(stmts.map(sanitizeStmt), mode);
   },
 };
 
