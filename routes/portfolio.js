@@ -69,27 +69,27 @@ const DEFAULT_PRICES = {
   '22': { name: '22 Ayar Bilezik (gr)', price: 3150, change: '+0.82', category: 'gold' },
   'GAG': { name: 'Gram Gümüş', price: 42.5, change: '+1.20', category: 'gold' },
 
-  // Kripto (USD)
-  'BTC': { name: 'Bitcoin', priceUSD: 91500, change: '+2.45', category: 'crypto' },
-  'ETH': { name: 'Ethereum', priceUSD: 3350, change: '+1.80', category: 'crypto' },
-  'SOL': { name: 'Solana', priceUSD: 195, change: '+4.10', category: 'crypto' },
-  'AVAX': { name: 'Avalanche', priceUSD: 32.5, change: '+2.85', category: 'crypto' },
-  'BNB': { name: 'BNB', priceUSD: 640, change: '+0.95', category: 'crypto' },
-  'XRP': { name: 'Ripple', priceUSD: 2.25, change: '+5.30', category: 'crypto' },
-  'DOGE': { name: 'Dogecoin', priceUSD: 0.28, change: '+3.15', category: 'crypto' },
+  // Kripto (USD) - Güncel Referans
+  'BTC': { name: 'Bitcoin', priceUSD: 80500, change: '+0.50', category: 'crypto' },
+  'ETH': { name: 'Ethereum', priceUSD: 2350, change: '+0.75', category: 'crypto' },
+  'SOL': { name: 'Solana', priceUSD: 101, change: '-0.65', category: 'crypto' },
+  'AVAX': { name: 'Avalanche', priceUSD: 8.85, change: '-1.40', category: 'crypto' },
+  'BNB': { name: 'BNB', priceUSD: 748, change: '+0.60', category: 'crypto' },
+  'XRP': { name: 'Ripple', priceUSD: 1.32, change: '+1.65', category: 'crypto' },
+  'DOGE': { name: 'Dogecoin', priceUSD: 0.078, change: '+0.65', category: 'crypto' },
   'USDT': { name: 'Tether (USDT)', priceUSD: 1.0, change: '+0.01', category: 'crypto' },
 
   // BIST Hisseleri (TRY)
-  'THYAO': { name: 'Türk Hava Yolları', price: 312.5, change: '+1.45', category: 'stock' },
-  'ASELS': { name: 'Aselsan', price: 68.2, change: '+2.10', category: 'stock' },
-  'GARAN': { name: 'Garanti BBVA', price: 124.0, change: '+0.80', category: 'stock' },
-  'EREGL': { name: 'Ereğli Demir Çelik', price: 54.3, change: '-0.35', category: 'stock' },
-  'SISE': { name: 'Şişecam', price: 49.8, change: '+0.50', category: 'stock' },
-  'TUPRS': { name: 'Tüpraş', price: 165.2, change: '+1.15', category: 'stock' },
-  'KCHOL': { name: 'Koç Holding', price: 215.0, change: '+1.60', category: 'stock' },
-  'BIMAS': { name: 'BİM Mağazalar', price: 520.0, change: '+0.40', category: 'stock' },
-  'AKBNK': { name: 'Akbank', price: 61.5, change: '+1.05', category: 'stock' },
-  'ISCTR': { name: 'İş Bankası (C)', price: 14.8, change: '+0.90', category: 'stock' },
+  'THYAO': { name: 'Türk Hava Yolları', price: 253.0, change: '+1.45', category: 'stock' },
+  'ASELS': { name: 'Aselsan', price: 340.75, change: '+2.10', category: 'stock' },
+  'GARAN': { name: 'Garanti BBVA', price: 127.3, change: '+0.80', category: 'stock' },
+  'EREGL': { name: 'Ereğli Demir Çelik', price: 31.46, change: '-0.35', category: 'stock' },
+  'SISE': { name: 'Şişecam', price: 42.5, change: '+0.50', category: 'stock' },
+  'TUPRS': { name: 'Tüpraş', price: 361.5, change: '+1.15', category: 'stock' },
+  'KCHOL': { name: 'Koç Holding', price: 198.7, change: '+1.60', category: 'stock' },
+  'BIMAS': { name: 'BİM Mağazalar', price: 363.0, change: '+0.40', category: 'stock' },
+  'AKBNK': { name: 'Akbank', price: 64.3, change: '+1.05', category: 'stock' },
+  'ISCTR': { name: 'İş Bankası (C)', price: 12.29, change: '+0.90', category: 'stock' },
 
   // US Global Stocks (USD)
   'AAPL': { name: 'Apple Inc.', priceUSD: 232.0, change: '+0.75', category: 'stock' },
@@ -152,35 +152,132 @@ async function fetchLiveMarketPrices() {
     console.warn('[PORTFOLIO] Gold/Currencies fetch warning:', err.message);
   }
 
-  // 2. Binance Kripto Fiyatları
+  // 2. Canlı Kripto Fiyatları (Binance 24hr + CoinGecko & GenelPara Yedekli)
+  let cryptoSuccess = false;
   try {
     const cryptoSymbols = '["BTCUSDT","ETHUSDT","SOLUSDT","AVAXUSDT","BNBUSDT","XRPUSDT","DOGEUSDT"]';
-    const binanceRes = await axios.get(`https://api.binance.com/api/v3/ticker/price?symbols=${encodeURIComponent(cryptoSymbols)}`, { timeout: 6000 });
-    if (Array.isArray(binanceRes.data)) {
+    const binanceRes = await axios.get(`https://api.binance.com/api/v3/ticker/24hr?symbols=${encodeURIComponent(cryptoSymbols)}`, { timeout: 6000 });
+    if (Array.isArray(binanceRes.data) && binanceRes.data.length > 0) {
       for (const item of binanceRes.data) {
         const coin = item.symbol.replace('USDT', '');
-        const pUSD = parseFloat(item.price) || 0;
+        const pUSD = parseFloat(item.lastPrice) || 0;
+        const chg = parseFloat(item.priceChangePercent) || 0;
         quotes[coin] = {
           symbol: coin,
           name: DEFAULT_PRICES[coin]?.name || coin,
           priceUSD: pUSD,
           priceTRY: pUSD * usdTry,
-          change: DEFAULT_PRICES[coin]?.change || '+0.0',
+          change: `${chg >= 0 ? '+' : ''}${chg.toFixed(2)}`,
           category: 'crypto'
         };
       }
+      cryptoSuccess = true;
     }
-    // USDTTRY
-    quotes['USDT'] = {
-      symbol: 'USDT',
-      name: 'Tether (USDT)',
-      priceUSD: 1.0,
-      priceTRY: usdTry,
-      change: '+0.01',
-      category: 'crypto'
-    };
   } catch (err) {
-    console.warn('[PORTFOLIO] Binance crypto fetch warning:', err.message);
+    console.warn('[PORTFOLIO] Binance ticker warning, falling back to CoinGecko:', err.message);
+  }
+
+  // CoinGecko yedeği
+  if (!cryptoSuccess) {
+    try {
+      const cgRes = await axios.get(
+        'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,solana,ripple,binancecoin,avalanche-2,dogecoin,tether&vs_currencies=usd&include_24hr_change=true',
+        { timeout: 6000 }
+      );
+      if (cgRes.data) {
+        const map = {
+          'BTC': cgRes.data.bitcoin,
+          'ETH': cgRes.data.ethereum,
+          'SOL': cgRes.data.solana,
+          'XRP': cgRes.data.ripple,
+          'BNB': cgRes.data.binancecoin,
+          'AVAX': cgRes.data['avalanche-2'],
+          'DOGE': cgRes.data.dogecoin,
+        };
+        for (const [coin, data] of Object.entries(map)) {
+          if (data && data.usd) {
+            const pUSD = Number(data.usd);
+            const chg = Number(data.usd_24h_change) || 0;
+            quotes[coin] = {
+              symbol: coin,
+              name: DEFAULT_PRICES[coin]?.name || coin,
+              priceUSD: pUSD,
+              priceTRY: pUSD * usdTry,
+              change: `${chg >= 0 ? '+' : ''}${chg.toFixed(2)}`,
+              category: 'crypto'
+            };
+          }
+        }
+        cryptoSuccess = true;
+      }
+    } catch (cgErr) {
+      console.warn('[PORTFOLIO] CoinGecko fallback warning:', cgErr.message);
+    }
+  }
+
+  // USDT Sabiti
+  quotes['USDT'] = {
+    symbol: 'USDT',
+    name: 'Tether (USDT)',
+    priceUSD: 1.0,
+    priceTRY: usdTry,
+    change: '+0.01',
+    category: 'crypto'
+  };
+
+  // 3. Canlı BIST ve Global Hisse Fiyatları (Yahoo Finance)
+  try {
+    const bistList = ['THYAO', 'ASELS', 'GARAN', 'EREGL', 'SISE', 'TUPRS', 'KCHOL', 'BIMAS', 'AKBNK', 'ISCTR'];
+    const usList = ['AAPL', 'NVDA', 'MSFT', 'TSLA', 'AMZN'];
+
+    await Promise.allSettled([
+      ...bistList.map(async (sym) => {
+        try {
+          const r = await axios.get(`https://query1.finance.yahoo.com/v8/finance/chart/${sym}.IS?interval=1d`, {
+            headers: { 'User-Agent': 'Mozilla/5.0' },
+            timeout: 5000
+          });
+          const meta = r.data?.chart?.result?.[0]?.meta;
+          if (meta?.regularMarketPrice) {
+            const p = Number(meta.regularMarketPrice);
+            const prev = Number(meta.previousClose) || Number(meta.chartPreviousClose) || p;
+            const pct = prev > 0 ? (((p - prev) / prev) * 100).toFixed(2) : '0.00';
+            quotes[sym] = {
+              symbol: sym,
+              name: DEFAULT_PRICES[sym]?.name || sym,
+              priceTRY: p,
+              priceUSD: p / usdTry,
+              change: `${Number(pct) >= 0 ? '+' : ''}${pct}`,
+              category: 'stock'
+            };
+          }
+        } catch {}
+      }),
+      ...usList.map(async (sym) => {
+        try {
+          const r = await axios.get(`https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d`, {
+            headers: { 'User-Agent': 'Mozilla/5.0' },
+            timeout: 5000
+          });
+          const meta = r.data?.chart?.result?.[0]?.meta;
+          if (meta?.regularMarketPrice) {
+            const pUSD = Number(meta.regularMarketPrice);
+            const prev = Number(meta.previousClose) || Number(meta.chartPreviousClose) || pUSD;
+            const pct = prev > 0 ? (((pUSD - prev) / prev) * 100).toFixed(2) : '0.00';
+            quotes[sym] = {
+              symbol: sym,
+              name: DEFAULT_PRICES[sym]?.name || sym,
+              priceUSD: pUSD,
+              priceTRY: pUSD * usdTry,
+              change: `${Number(pct) >= 0 ? '+' : ''}${pct}`,
+              category: 'stock'
+            };
+          }
+        } catch {}
+      })
+    ]);
+  } catch (err) {
+    console.warn('[PORTFOLIO] Stocks live fetch warning:', err.message);
   }
 
   // 3. Eksik kalanlar için fallback fiyatları yerleştir

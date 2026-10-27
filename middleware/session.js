@@ -102,7 +102,7 @@ function clearRevokedSessionCache() {
 async function loadAuthUser(uid) {
   const hit = userCache.get(uid);
   if (hit && Date.now() - hit.at < CACHE_MS) return hit.user;
-  const r = await db.execute({ sql: 'SELECT id, email, role, token_version FROM users WHERE id = ?', args: [uid] });
+  const r = await db.execute({ sql: 'SELECT id, email, role, token_version, is_banned, ban_reason FROM users WHERE id = ?', args: [uid] });
   const user = r.rows[0] || null;
   userCache.set(uid, { user, at: Date.now() });
   return user;
@@ -135,7 +135,7 @@ async function authenticate(token) {
 
 // Oturum gerektirmeyen uçlar (giriş, kayıt, şifre sıfırlama, herkese açık kurlar, ödeme webhook'u)
 const PUBLIC = [
-  /^\/api\/auth\/(login|register|google|forgot-password|verify-reset-code|reset-password|verify-email|resend-verification)\/?$/,
+  /^\/api\/auth\/(login|register|google|forgot-password|verify-reset-code|reset-password|verify-email|verify-link|resend-verification)\/?$/,
   /^\/api\/exchange(\/|$)/,
   /^\/api\/subscription\/webhook\/?$/,
   /^\/api\/errors\/?$/,
@@ -146,6 +146,7 @@ const OPTIONAL = [/^\/api\/feedback\/?$/];
 /**
  * /api altındaki her isteği doğrular:
  * - Geçerli token yoksa 401
+ * - Kullanıcı banlıysa 403 USER_BANNED
  * - body/query içindeki userId / adminUserId, token sahibinden farklıysa 403
  */
 async function requireAuth(req, res, next) {
@@ -158,6 +159,17 @@ async function requireAuth(req, res, next) {
       if (OPTIONAL.some(r => r.test(path)) && req.method === 'POST') return next();
       return res.status(401).json({ success: false, code: 'AUTH_REQUIRED', error: 'Oturumunuzun süresi doldu. Lütfen tekrar giriş yapın.' });
     }
+
+    if (Number(user.is_banned) === 1) {
+      return res.status(403).json({
+        success: false,
+        code: 'USER_BANNED',
+        isBanned: true,
+        banReason: user.ban_reason || 'Hesabınız kurallara aykırı davranış nedeniyle askıya alınmıştır.',
+        error: 'Hesabınız askıya alınmıştır.'
+      });
+    }
+
     req.authUser = user;
     req.authUserId = user.id;
     req.authSessionId = user.sid || null;

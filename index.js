@@ -15,12 +15,6 @@ const authRoutes = require('./routes/auth');
 const paymentRoutes = require('./routes/payments');
 const settingsRoutes = require('./routes/settings');
 const incomeRoutes = require('./routes/income');
-const exchangeRoutes = require('./routes/exchange');
-const gameRoutes = require('./routes/game');
-const walletsRoutes = require('./routes/wallets');
-const portfolioRoutes = require('./routes/portfolio');
-const socialRoutes = require('./routes/social');
-const adminRoutes = require('./routes/admin');
 const subscriptionRoutes = require('./routes/subscription');
 const dbRoutes = require('./routes/db');
 const backupRoutes = require('./routes/backup');
@@ -31,6 +25,13 @@ const customerProfileRoutes = require('./routes/customer-profile');
 const feedbackRoutes = require('./routes/feedback');
 const { requireAuth } = require('./middleware/session');
 const { db } = require('./db/turso');
+const exchangeRoutes = require('./routes/exchange');
+const gameRoutes = require('./routes/game');
+const walletsRoutes = require('./routes/wallets');
+const portfolioRoutes = require('./routes/portfolio');
+const socialRoutes = require('./routes/social');
+const adminRoutes = require('./routes/admin');
+const notesRoutes = require('./routes/notes');
 
 const app = express();
 const PORT = process.env.PORT || process.env.API_PORT || 4000;
@@ -58,13 +59,25 @@ const allowedOrigins = [
   'ionic://localhost',
   'https://localhost',
 ];
+
+const isAllowedOrigin = (origin) => {
+  if (!origin) return true; // Mobil uygulama (Capacitor), Electron ve sunucular arası çağrılar
+  if (allowedOrigins.includes(origin)) return true;
+  if (/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) return true;
+  if (/\.onrender\.com$/.test(origin)) return true;
+  if (/\.yehsqn\.com$/.test(origin) || origin === 'https://yehsqn.com') return true;
+  if (/\.paypulse\.(app|com)$/.test(origin)) return true;
+  return false;
+};
+
 app.use(cors({
   origin: function(origin, callback) {
-    if (!origin) return callback(null, true);
-    if (allowedOrigins.includes(origin) || /\.onrender\.com$/.test(origin)) {
+    if (isAllowedOrigin(origin)) {
       return callback(null, true);
     }
-    return callback(null, true); // Mobile / desktop app compat
+    // Masaüstü exe file:// (Origin: null/file://) üzerinden çağırır; oturum Bearer token ile
+    // doğrulandığı için (çerez yok) diğer kökenlere izin vermek güvenlik açığı oluşturmaz.
+    return callback(null, true);
   },
   credentials: true
 }));
@@ -96,12 +109,13 @@ app.get('/', (req, res) => {
   });
 });
 
-// Health check
+// Health check & ping (UptimeRobot ve dış servisler için)
 app.get('/health', (req, res) => res.json({ ok: true, ts: Date.now() }));
+app.get('/ping', (req, res) => res.send('pong'));
 
 // Kod/şifre deneme uçları: kaba kuvvete karşı katı sınır
 for (const route of ['login', 'register', 'google', 'verify-pin', 'verify-income-password', 'forgot-password',
-  'verify-reset-code', 'reset-password', 'verify-email', 'resend-verification', 'delete-account', 'change-password']) {
+  'verify-reset-code', 'reset-password', 'verify-email', 'verify-link', 'resend-verification', 'delete-account', 'change-password']) {
   app.use(`/api/auth/${route}`, authLimiter);
 }
 
@@ -141,6 +155,7 @@ app.use('/api/wallets', walletsRoutes);
 app.use('/api/portfolio', portfolioRoutes);
 app.use('/api/social', socialRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/notes', notesRoutes);
 
 // Error Reporting Endpoint
 app.post('/api/errors', errorLimiter, async (req, res) => {
@@ -163,6 +178,9 @@ app.use((req, res) => res.status(404).json({ error: 'Endpoint bulunamadı' }));
 
 // Güvenli Error handler (Veritabanı ve sunucu detaylarını dışarı sızdırmaz)
 app.use((err, req, res, next) => {
+  if (err.message && err.message.startsWith('CORS')) {
+    return res.status(403).json({ success: false, error: 'Yetkisiz alan adı (CORS Engeli).' });
+  }
   console.error('[API Error]', err.message);
   res.status(500).json({ success: false, error: 'İşlem sırasında bir hata oluştu. Lütfen daha sonra tekrar deneyin.' });
 });
@@ -195,6 +213,13 @@ initDb()
     server.listen(PORT, () => {
       console.log(`[API] Server running on port ${PORT}`);
       console.log(`[WS]  WebSocket: ws://localhost:${PORT}/ws`);
+
+      // Render spin-down sonrası uyanma kaydı (UptimeRobot her 5 dakikada ping atar)
+      const externalUrl = process.env.RENDER_EXTERNAL_URL || process.env.VITE_API_URL || '';
+      if (externalUrl) {
+        console.log(`[KEEP-ALIVE] UptimeRobot hedefi: ${externalUrl}/health`);
+        console.log('[KEEP-ALIVE] Sunucu sürekli açık tutmak için uptimerobot.com adresinde monitor oluşturun.');
+      }
     });
   })
   .catch(err => {

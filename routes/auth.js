@@ -89,7 +89,11 @@ async function resetFailures(user, kind) {
 
 const genCode = () => String(crypto.randomInt(100000, 1000000)); // tahmin edilemez 6 haneli kod
 
+// Bağlantı adresi sabit: istek Host başlığından türetilmez (saldırgan e-postadaki bağlantıyı kendi alanına yönlendiremesin)
+const API_BASE_URL = (process.env.API_BASE_URL || 'https://api.yehsqn.com').replace(/\/+$/, '');
+
 async function sendVerificationEmail(email, code) {
+  const verifyLink = `${API_BASE_URL}/api/auth/verify-link?email=${encodeURIComponent(email)}&code=${code}`;
   // Sade işlem e-postası: Gmail'de "Birincil" sekmeye düşmesi için süslemesiz
   return sendMail({
     to: email,
@@ -98,10 +102,11 @@ async function sendVerificationEmail(email, code) {
       <p>Merhaba,</p>
       <p>PayPulse hesabını doğrulamak için bu kodu uygulamaya gir:</p>
       <p style="font-size:26px;font-weight:bold;letter-spacing:4px;margin:16px 0">${code}</p>
+      <p>Ya da bu bağlantıya tıkla: <a href="${verifyLink}">Hesabımı doğrula</a></p>
       <p>Kod 30 dakika geçerlidir. Bu kaydı sen yapmadıysan bu e-postayı yok sayabilirsin.</p>
       <p>PayPulse</p>
     </div>`,
-    text: `Merhaba,\n\nPayPulse hesabını doğrulamak için bu kodu uygulamaya gir: ${code}\n\nKod 30 dakika geçerlidir. Bu kaydı sen yapmadıysan bu e-postayı yok sayabilirsin.\n\nPayPulse`,
+    text: `Merhaba,\n\nPayPulse hesabını doğrulamak için bu kodu uygulamaya gir: ${code}\n\nYa da bu bağlantıyı aç: ${verifyLink}\n\nKod 30 dakika geçerlidir. Bu kaydı sen yapmadıysan bu e-postayı yok sayabilirsin.\n\nPayPulse`,
   });
 }
 
@@ -206,6 +211,8 @@ function formatUser(row) {
     createdAt: row.created_at || null,
     avatar: row.avatar || '',
     friendCode,
+    isBanned: Number(row.is_banned) === 1,
+    banReason: row.ban_reason || null,
     // Müşteri tipi bilgileri
     customerType,
     allowedPaymentMethods: (PAYMENT_PERMISSIONS[customerType] || []).map(m => ({
@@ -244,6 +251,16 @@ router.post('/login', async (req, res) => {
     }
 
     if (!isPasswordValid) return res.status(401).json({ success: false, error: 'E-posta veya şifre hatalı' });
+
+    if (Number(user.is_banned) === 1) {
+      return res.status(403).json({
+        success: false,
+        code: 'USER_BANNED',
+        isBanned: true,
+        banReason: user.ban_reason || 'Hesabınız kurallara aykırı davranış nedeniyle askıya alınmıştır.',
+        error: 'Hesabınız askıya alınmıştır.'
+      });
+    }
 
     if (Number(user.email_verified) === 0) {
       const emailSent = await issueVerificationCode(user.id, user.email);
@@ -513,6 +530,16 @@ router.post('/google', async (req, res) => {
       user = result.rows[0];
     }
 
+    if (Number(user.is_banned) === 1) {
+      return res.status(403).json({
+        success: false,
+        code: 'USER_BANNED',
+        isBanned: true,
+        banReason: user.ban_reason || 'Hesabınız kurallara aykırı davranış nedeniyle askıya alınmıştır.',
+        error: 'Hesabınız askıya alınmıştır.'
+      });
+    }
+
     if (Number(user.email_verified) === 0) {
       // E-postası hiç doğrulanmamış hesap: şifresini bu e-postanın sahibi olmayan biri koymuş olabilir
       // (önceden kayıt olup sahibinin Google ile girmesini bekleme saldırısı). Gerçek sahip Google ile
@@ -544,9 +571,9 @@ router.post('/set-pin', async (req, res) => {
   try {
     const { userId, pin } = req.body;
     if (!userId) return res.status(400).json({ success: false, error: 'userId gerekli' });
-    // pin boş/null → PIN kaldırılır; aksi halde tam 4 rakam olmalı
-    if (pin && !/^\d{4}$/.test(String(pin))) {
-      return res.status(400).json({ success: false, error: 'PIN 4 haneli rakam olmalı.' });
+    // pin boş/null → PIN kaldırılır; aksi halde en az 4, en fazla 32 karakter (harf/rakam/şifre) olmalı
+    if (pin && (String(pin).length < 4 || String(pin).length > 32)) {
+      return res.status(400).json({ success: false, error: 'PIN / Şifre en az 4, en fazla 32 karakter olmalıdır.' });
     }
     // Mevcut PIN varsa değiştirmek/kaldırmak için o PIN gerekir (kilitsiz bırakılan telefonda
     // başkası PIN'i değiştirip biyometriğe kendi parmak izini bağlayamasın). Deneme sınırı geçerli.
@@ -573,7 +600,7 @@ router.post('/verify-pin', async (req, res) => {
     const user = result.rows[0];
     if (!user || !user.pin) return res.status(401).json({ success: false, error: 'PIN hatalı.' });
     if (rejectIfLocked(res, user, 'pin')) return;
-    if (!/^\d{4}$/.test(String(pin || ''))) return recordFailure(res, user, 'pin');
+    if (!pin || String(pin).length < 4 || String(pin).length > 32) return recordFailure(res, user, 'pin');
 
     const stored = String(user.pin);
     const isHashed = stored.startsWith('$2');
@@ -936,6 +963,208 @@ router.post('/verify-email', async (req, res) => {
     res.status(500).json({ success: false, error: 'Doğrulama yapılamadı.' });
   }
 });
+
+// GET /api/auth/verify-link — e-postadaki tek tıkla şık doğrulama sayfası
+router.get('/verify-link', async (req, res) => {
+  try {
+    const { email, code } = req.query || {};
+    if (!email || !code) {
+      return res.status(400).send(renderVerificationHtml({ success: false, error: 'E-posta veya doğrulama kodu eksik.' }));
+    }
+
+    const r = await db.execute({ sql: 'SELECT * FROM users WHERE email = ?', args: [String(email).toLowerCase().trim()] });
+    const user = r.rows[0];
+
+    if (!user) {
+      return res.status(404).send(renderVerificationHtml({ success: false, error: 'Kayıtlı kullanıcı bulunamadı.' }));
+    }
+
+    if (Number(user.email_verified) === 1) {
+      return res.send(renderVerificationHtml({ success: true, message: 'E-posta adresiniz zaten doğrulanmış durumda!' }));
+    }
+
+    if (!user.email_verify_code) {
+      return res.status(400).send(renderVerificationHtml({ success: false, error: 'Doğrulama kodu hatalı veya geçersiz.' }));
+    }
+    if (user.email_verify_code !== String(code).trim()) {
+      // verify-email ile aynı sayaç: 5 hatalı denemede kod geçersiz olur (6 haneli kod kaba kuvvetle bulunamasın)
+      const attempts = (Number(user.email_verify_attempts) || 0) + 1;
+      if (attempts >= 5) {
+        await db.execute({ sql: 'UPDATE users SET email_verify_code = NULL, email_verify_attempts = 0 WHERE id = ?', args: [user.id] });
+        return res.status(400).send(renderVerificationHtml({ success: false, error: 'Çok fazla hatalı deneme. Lütfen uygulamadan yeni bir kod isteyin.' }));
+      }
+      await db.execute({ sql: 'UPDATE users SET email_verify_attempts = ? WHERE id = ?', args: [attempts, user.id] });
+      return res.status(400).send(renderVerificationHtml({ success: false, error: 'Doğrulama kodu hatalı veya geçersiz.' }));
+    }
+
+    if (new Date() > new Date(user.email_verify_expires_at)) {
+      return res.status(400).send(renderVerificationHtml({ success: false, error: 'Doğrulama kodunun 30 dakikalık süresi dolmuş. Lütfen uygulamadan yeni bir kod isteyin.' }));
+    }
+
+    await db.execute({ sql: 'UPDATE users SET email_verified = 1, email_verify_code = NULL, email_verify_expires_at = NULL WHERE id = ?', args: [user.id] });
+    invalidateUser(user.id);
+
+    return res.send(renderVerificationHtml({
+      success: true,
+      message: 'Hesabınız başarıyla aktifleştirildi. Artık PayPulse\'ı tüm özellikleriyle güvenle kullanabilirsiniz.'
+    }));
+  } catch (err) {
+    return res.status(500).send(renderVerificationHtml({ success: false, error: 'Doğrulama sırasında bir hata oluştu. Lütfen tekrar deneyin.' }));
+  }
+});
+
+function renderVerificationHtml({ success, error, message }) {
+  return `<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PayPulse — ${success ? 'E-posta Doğrulandı' : 'Doğrulama Hatası'}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    * { margin:0; padding:0; box-sizing:border-box; font-family:'Plus Jakarta Sans',-apple-system,BlinkMacSystemFont,sans-serif; }
+    body {
+      min-height:100vh;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      background:radial-gradient(ellipse at 50% -20%, #1e1b4b 0%, #070b1a 60%, #030712 100%);
+      color:#f8fafc;
+      padding:24px;
+    }
+    .card {
+      width:100%;
+      max-width:440px;
+      background:rgba(15, 23, 42, 0.75);
+      border:1px solid ${success ? 'rgba(99, 102, 241, 0.3)' : 'rgba(239, 68, 68, 0.3)'};
+      backdrop-filter:blur(24px);
+      -webkit-backdrop-filter:blur(24px);
+      border-radius:28px;
+      padding:44px 32px;
+      text-align:center;
+      box-shadow:0 30px 60px -15px rgba(0, 0, 0, 0.8), 0 0 50px ${success ? 'rgba(99, 102, 241, 0.15)' : 'rgba(239, 68, 68, 0.15)'};
+      animation:pop 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    @keyframes pop {
+      0% { opacity:0; transform:scale(0.92) translateY(20px); }
+      100% { opacity:1; transform:scale(1) translateY(0); }
+    }
+    .badge {
+      display:inline-flex;
+      align-items:center;
+      gap:6px;
+      padding:6px 14px;
+      border-radius:999px;
+      background:${success ? 'rgba(99, 102, 241, 0.15)' : 'rgba(239, 68, 68, 0.15)'};
+      border:1px solid ${success ? 'rgba(99, 102, 241, 0.3)' : 'rgba(239, 68, 68, 0.3)'};
+      font-size:12px;
+      font-weight:700;
+      color:${success ? '#818cf8' : '#f87171'};
+      letter-spacing:0.04em;
+      text-transform:uppercase;
+      margin-bottom:24px;
+    }
+    .icon-wrap {
+      width:84px;
+      height:84px;
+      margin:0 auto 24px;
+      border-radius:24px;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      background:${success ? 'linear-gradient(135deg, rgba(16, 185, 129, 0.2) 0%, rgba(6, 182, 212, 0.2) 100%)' : 'linear-gradient(135deg, rgba(239, 68, 68, 0.2) 0%, rgba(244, 63, 94, 0.2) 100%)'};
+      border:1px solid ${success ? 'rgba(16, 185, 129, 0.4)' : 'rgba(239, 68, 68, 0.4)'};
+      box-shadow:0 0 35px ${success ? 'rgba(16, 185, 129, 0.3)' : 'rgba(239, 68, 68, 0.3)'};
+    }
+    .checkmark {
+      width:44px;
+      height:44px;
+      stroke:${success ? '#10b981' : '#ef4444'};
+      stroke-width:3;
+      stroke-linecap:round;
+      stroke-linejoin:round;
+      fill:none;
+      stroke-dasharray:100;
+      stroke-dashoffset:100;
+      animation:draw 0.8s ease forwards 0.2s;
+    }
+    @keyframes draw { to { stroke-dashoffset:0; } }
+    h1 { font-size:24px; font-weight:800; letter-spacing:-0.02em; margin-bottom:12px; color:#ffffff; }
+    p { font-size:14px; color:#94a3b8; line-height:1.6; margin-bottom:28px; }
+    .btn {
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      width:100%;
+      padding:15px 24px;
+      border-radius:18px;
+      font-size:15px;
+      font-weight:700;
+      color:#ffffff;
+      text-decoration:none;
+      background:linear-gradient(135deg, #4f46e5 0%, #06b6d4 100%);
+      box-shadow:0 10px 25px -5px rgba(79, 70, 229, 0.4);
+      transition:all 0.2s ease;
+      cursor:pointer;
+      border:none;
+    }
+    .btn:hover {
+      transform:translateY(-2px);
+      box-shadow:0 15px 30px -5px rgba(79, 70, 229, 0.6);
+    }
+    .footer-text {
+      margin-top:20px;
+      font-size:12px;
+      color:#64748b;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="badge">✦ PAYPULSE GÜVENLİK</div>
+    <div class="icon-wrap">
+      ${success ? '<svg class="checkmark" viewBox="0 0 24 24"><path d="M20 6L9 17L4 12"></path></svg>' : '<svg class="checkmark" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>'}
+    </div>
+    <h1>${success ? 'E-postanız Doğrulandı!' : 'Doğrulama Başarısız'}</h1>
+    <p>${success ? (message || 'Hesabınız başarıyla aktifleştirildi.') : (error || 'Bir sorun oluştu.')}</p>
+    <a href="paypulse://open" class="btn" onclick="tryClose();">${success ? "PayPulse'ı Aç ve Sekmeyi Kapat" : 'Giriş Ekranına Dön'}</a>
+    ${success ? `
+    <div id="countWrap" style="font-size:12px;color:#94a3b8;margin-top:14px;line-height:1.5;">Bu sekme <b style="color:#818cf8;"><span id="vCount">2</span></b> saniye sonra otomatik kapanacak...</div>
+    <script>
+      function tryClose() {
+        try { window.opener = null; } catch(e) {}
+        try { window.open('', '_self', ''); window.close(); } catch(e) {}
+        try { window.open(window.location.href, '_self'); window.close(); } catch(e) {}
+        try { if (window.top) window.top.close(); } catch(e) {}
+        try { window.close(); } catch(e) {}
+      }
+      try { window.location.href = 'paypulse://open'; } catch(e) {}
+      tryClose();
+      var vLeft = 2;
+      var vEl = document.getElementById('vCount');
+      var vTimer = setInterval(function() {
+        vLeft--;
+        if (vEl) vEl.textContent = vLeft;
+        tryClose();
+        if (vLeft <= 0) {
+          clearInterval(vTimer);
+          tryClose();
+          setTimeout(function() {
+            var cw = document.getElementById('countWrap');
+            if (cw) {
+              cw.innerHTML = 'Tarayıcı koruması nedeniyle sekme kapanmadıysa yukarıdaki butona tıklayın veya <kbd style="background:rgba(255,255,255,0.1);padding:2px 6px;border-radius:4px;border:1px solid rgba(255,255,255,0.2);">Ctrl + W</kbd> ile kapatın.';
+            }
+          }, 300);
+        }
+      }, 1000);
+    </script>
+    ` : ''}
+    <div class="footer-text">Mobil veya masaüstü uygulama açılmazsa doğrudan uygulamaya dönüp giriş yapabilirsiniz.</div>
+  </div>
+</body>
+</html>`;
+}
 
 // POST /api/auth/resend-verification
 router.post('/resend-verification', async (req, res) => {
