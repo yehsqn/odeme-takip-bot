@@ -112,9 +112,9 @@ router.post('/test-push', async (req, res) => {
 // POST /api/notifications/trigger-reminders — manuel hatırlatıcı tetikleme
 router.post('/trigger-reminders', async (req, res) => {
   try {
-    const { userId } = req.body || {};
+    // Yalnızca oturum sahibinin hatırlatıcıları (boş kimlik tüm kullanıcılara bildirim gönderirdi)
     const { checkUpcomingPayments } = require('../cron');
-    const result = await checkUpcomingPayments(true, userId || null);
+    const result = await checkUpcomingPayments(true, req.authUserId);
     res.json({ success: true, ...result, message: 'Hatırlatıcı kontrolü tamamlandı.' });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
