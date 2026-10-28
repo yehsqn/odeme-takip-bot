@@ -8,31 +8,34 @@ const express = require('express');
 const router = express.Router();
 const crypto = require('crypto');
 const { db } = require('../db/turso');
-const { requireAdmin, invalidateUser } = require('../middleware/session');
+const { requireAdmin, invalidateUser, unsubscribeSig } = require('../middleware/session');
 const { sendToUser } = require('../websocket');
 const { sendMail } = require('../mailer');
 
 router.use(requireAdmin);
 
 const VERSION_RE = /^\d{1,3}\.\d{1,3}\.\d{1,4}$/;
-const DOWNLOAD_URL = process.env.DOWNLOAD_PAGE_URL || 'https://github.com/yehsqn/paypulse-releases/releases/latest';
+const API_BASE_URL = (process.env.API_BASE_URL || 'https://api.yehsqn.com').replace(/\/+$/, '');
+const unsubscribeUrl = (uid) => `${API_BASE_URL}/api/auth/unsubscribe?u=${encodeURIComponent(uid)}&s=${unsubscribeSig(uid)}`;
+const DOWNLOAD_URL =process.env.DOWNLOAD_PAGE_URL || 'https://github.com/yehsqn/paypulse-releases/releases/latest';
 const esc = (s) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 async function sendUpdateEmails(rows, version, notes, broadcastId) {
   let sent = 0;
   const subject = `PayPulse ${version} yayında`;
-  const html = `<div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto;padding:24px;background:#0f172a;color:#f8fafc;border-radius:16px;border:1px solid #334155">
+  const htmlFor = (unsub) => `<div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto;padding:24px;background:#0f172a;color:#f8fafc;border-radius:16px;border:1px solid #334155">
     <h2 style="color:#38bdf8;margin-top:0">PayPulse ${esc(version)} yayında</h2>
     <p style="color:#cbd5e1;white-space:pre-line">${esc(notes)}</p>
     <p><a href="${esc(DOWNLOAD_URL)}" style="display:inline-block;background:#3b82f6;color:#fff;padding:10px 18px;border-radius:10px;text-decoration:none">Yeni sürümü indir</a></p>
     <p style="color:#94a3b8;font-size:12px">Masaüstü uygulaması açıldığında kendiliğinden güncellenir; telefonda Google Play'den güncelleyebilirsin.
-    Bu duyuruları almak istemiyorsan bu e-postayı yanıtlaman yeterli.</p>
+    Bu e-postayı, duyuru e-postası almayı kabul ettiğin için alıyorsun. <a href="${esc(unsub)}" style="color:#94a3b8">Abonelikten çık</a></p>
   </div>`;
-  const text = `PayPulse ${version} yayında\n\n${notes}\n\nYeni sürüm: ${DOWNLOAD_URL}\n\nMasaüstü uygulaması açıldığında kendiliğinden güncellenir; telefonda Google Play'den güncelleyebilirsin.`;
+  const textFor = (unsub) => `PayPulse ${version} yayında\n\n${notes}\n\nYeni sürüm: ${DOWNLOAD_URL}\n\nMasaüstü uygulaması açıldığında kendiliğinden güncellenir; telefonda Google Play'den güncelleyebilirsin.\n\nAbonelikten çık: ${unsub}`;
   for (const u of rows) {
-    if (await sendMail({ to: u.email, subject, html, text, bulk: true })) sent++;
-    await sleep(700); // sağlayıcı sınırına takılmamak ve toplu gönderim görünmemek için
+    const unsub = unsubscribeUrl(u.id);
+    if (await sendMail({ to: u.email, subject, html: htmlFor(unsub), text: textFor(unsub), bulk: true, unsubscribeUrl: unsub })) sent++;
+    await sleep(700); // e-posta sağlayıcısının gönderim hızı sınırına takılmamak için
   }
   await db.execute({ sql: 'UPDATE app_broadcasts SET email_sent = ? WHERE id = ?', args: [sent, broadcastId] }).catch(() => {});
   console.log(`[ADMIN] ${version} duyurusu ${sent}/${rows.length} e-postaya gönderildi.`);
@@ -51,7 +54,7 @@ router.post('/broadcast-update', async (req, res) => {
       return res.status(409).json({ success: false, alreadySent: true, error: `${version} için daha önce duyuru gönderilmiş.` });
     }
 
-    const users = (await db.execute('SELECT id, email, email_verified FROM users')).rows;
+    const users = (await db.execute('SELECT id, email, email_verified, email_updates_consent FROM users')).rows;
     const id = crypto.randomBytes(12).toString('hex');
     await db.execute({
       sql: `INSERT INTO app_broadcasts (id, version, notes, sent_by, recipients, email_requested, email_sent, created_at)
@@ -66,7 +69,8 @@ router.post('/broadcast-update', async (req, res) => {
       await Promise.all(users.slice(i, i + 25).map(u => sendToUser(u.id, { type: 'APP_UPDATE', title, body }).catch(() => {})));
     }
 
-    const emailTargets = sendEmail ? users.filter(u => u.email && Number(u.email_verified) !== 0) : [];
+    // İYS: duyuru e-postası yalnızca açıkça izin vermiş (ve e-postası doğrulanmış) kullanıcılara gider
+    const emailTargets = sendEmail ? users.filter(u => u.email && Number(u.email_verified) !== 0 && Number(u.email_updates_consent) === 1) : [];
     if (emailTargets.length) {
       // Yanıtı bekletme: e-postalar arka planda sırayla gider
       sendUpdateEmails(emailTargets, version, notes, id).catch(err => console.error('[ADMIN] E-posta duyuru hatası:', err.message));
@@ -93,7 +97,7 @@ router.get('/users', async (req, res) => {
   try {
     const r = await db.execute(`
       SELECT id, email, display_name, avatar, role, is_premium, premium_expires_at,
-             subscription_type, subscription_expiry, is_banned, ban_reason, banned_at, created_at
+             subscription_type, subscription_expiry, is_banned, ban_reason, banned_at, banned_until, created_at
       FROM users
       ORDER BY datetime(created_at) DESC
     `);
@@ -106,9 +110,10 @@ router.get('/users', async (req, res) => {
       isPremium: Number(u.is_premium) === 1 || u.role === 'admin',
       subscriptionType: u.subscription_type || 'free',
       subscriptionExpiry: u.subscription_expiry || u.premium_expires_at || null,
-      isBanned: Number(u.is_banned) === 1,
+      isBanned: Number(u.is_banned) === 1 && !(u.banned_until && Date.parse(u.banned_until) <= Date.now()),
       banReason: u.ban_reason || null,
       bannedAt: u.banned_at || null,
+      bannedUntil: u.banned_until || null,
       createdAt: u.created_at || null
     }));
     res.json({ success: true, users });
@@ -117,13 +122,16 @@ router.get('/users', async (req, res) => {
   }
 });
 
-// POST /api/admin/ban-user — Kullanıcı banlama
+// POST /api/admin/ban-user — Kullanıcı banlama (durationDays: 1-3650 gün; boş/0 → süresiz)
 router.post('/ban-user', async (req, res) => {
   try {
-    const { targetUserId, reason } = req.body;
+    const { targetUserId, reason, durationDays } = req.body;
     if (!targetUserId) return res.status(400).json({ success: false, error: 'targetUserId gerekli' });
 
     const banReason = (reason || 'Topluluk ve kullanım kurallarının ihlali.').trim().slice(0, 500);
+    const days = Math.floor(Number(durationDays) || 0);
+    if (days < 0 || days > 3650) return res.status(400).json({ success: false, error: 'Ban süresi 1-3650 gün arasında olmalı (süresiz için boş bırakın).' });
+    const bannedUntil = days > 0 ? new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString() : null;
 
     // Kullanıcıyı banla ve token_version artırarak mevcut tüm oturumlarını anında düşür
     await db.execute({
@@ -131,13 +139,20 @@ router.post('/ban-user', async (req, res) => {
             SET is_banned = 1,
                 ban_reason = ?,
                 banned_at = datetime('now'),
+                banned_until = ?,
                 token_version = COALESCE(token_version, 0) + 1
             WHERE id = ?`,
-      args: [banReason, targetUserId]
+      args: [banReason, bannedUntil, targetUserId]
     });
     invalidateUser(String(targetUserId)); // önbellekteki eski kullanıcı kaydı 60 sn boyunca geçerli kalmasın
 
-    res.json({ success: true, message: 'Kullanıcı başarıyla banlandı ve tüm oturumları sonlandırıldı.' });
+    res.json({
+      success: true,
+      bannedUntil,
+      message: bannedUntil
+        ? `Kullanıcı ${days} gün banlandı (bitiş: ${new Date(bannedUntil).toLocaleString('tr-TR', { timeZone: 'Europe/Istanbul' })}).`
+        : 'Kullanıcı süresiz banlandı ve tüm oturumları sonlandırıldı.'
+    });
   } catch (err) {
     res.status(500).json({ success: false, error: 'Kullanıcı banlanamadı: ' + err.message });
   }
@@ -153,7 +168,8 @@ router.post('/unban-user', async (req, res) => {
       sql: `UPDATE users
             SET is_banned = 0,
                 ban_reason = NULL,
-                banned_at = NULL
+                banned_at = NULL,
+                banned_until = NULL
             WHERE id = ?`,
       args: [targetUserId]
     });
