@@ -108,21 +108,41 @@ async function fetchLiveMarketPrices() {
   const quotes = {};
   let usdTry = marketQuotesCache.usdTry || 38.5;
 
-  // 1. GenelPara döviz ve altın çekimi
+  // 0. Güncel USD/TRY kurunu uluslararası açık API'den garantiye al
   try {
+    const erRes = await axios.get('https://open.er-api.com/v6/latest/USD', { timeout: 5000 });
+    if (erRes.data?.rates?.TRY) {
+      usdTry = Number(erRes.data.rates.TRY) || usdTry;
+    }
+  } catch {}
+
+  const parseTRNumber = (v) => {
+    if (typeof v === 'number') return v;
+    const str = String(v || '').trim().replace(/[₺$€%\s]/g, '');
+    if (!str) return 0;
+    // "3.450,25" -> "3450.25", "3450.25" -> "3450.25", "3450,25" -> "3450.25"
+    if (str.includes('.') && str.includes(',')) {
+      return parseFloat(str.replace(/\./g, '').replace(',', '.')) || 0;
+    }
+    return parseFloat(str.replace(',', '.')) || 0;
+  };
+
+  // 1. GenelPara döviz ve altın çekimi (sembol listesi açıkça belirtilmeli)
+  let goldFetched = false;
+  try {
+    const headers = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' };
     const [dovizRes, altinRes] = await Promise.all([
-      axios.get('https://api.genelpara.com/json/?list=doviz&sembol=USD,EUR', { timeout: 6000 }),
-      axios.get('https://api.genelpara.com/json/?list=altin&sembol=all', { timeout: 6000 })
+      axios.get('https://api.genelpara.com/json/?list=doviz&sembol=USD,EUR', { headers, timeout: 6000 }),
+      axios.get('https://api.genelpara.com/json/?list=altin&sembol=GA,C,Y,T,ATA,CMR,22,GAG', { headers, timeout: 6000 })
     ]);
 
     if (dovizRes.data?.data?.USD?.satis) {
-      usdTry = parseFloat(String(dovizRes.data.data.USD.satis).replace(',', '.')) || usdTry;
+      const parsedUsd = parseTRNumber(dovizRes.data.data.USD.satis);
+      if (parsedUsd > 10) usdTry = parsedUsd;
     }
 
     if (altinRes.data?.data) {
       const gData = altinRes.data.data;
-      const parseVal = (v) => parseFloat(String(v || 0).replace(',', '.')) || 0;
-
       const altinMap = {
         'GA': 'GA',
         'C': 'C',
@@ -137,28 +157,111 @@ async function fetchLiveMarketPrices() {
       for (const [key, code] of Object.entries(altinMap)) {
         if (gData[key]) {
           const s = gData[key];
-          quotes[code] = {
-            symbol: code,
-            name: DEFAULT_PRICES[code]?.name || code,
-            priceTRY: parseVal(s.satis),
-            priceUSD: parseVal(s.satis) / usdTry,
-            change: s.degisim ? `${s.degisim > 0 ? '+' : ''}${s.degisim}` : '0',
-            category: 'gold'
-          };
+          const pTRY = parseTRNumber(s.satis);
+          if (pTRY > 0) {
+            const rawChg = parseTRNumber(s.degisim);
+            quotes[code] = {
+              symbol: code,
+              name: DEFAULT_PRICES[code]?.name || code,
+              priceTRY: pTRY,
+              priceUSD: pTRY / usdTry,
+              change: `${rawChg >= 0 ? '+' : ''}${rawChg.toFixed(2)}`,
+              category: 'gold'
+            };
+            if (code === 'GA') goldFetched = true;
+          }
         }
       }
     }
   } catch (err) {
-    console.warn('[PORTFOLIO] Gold/Currencies fetch warning:', err.message);
+    console.warn('[PORTFOLIO] GenelPara Gold/Currencies fetch warning:', err.message);
   }
 
-  // 2. Canlı Kripto Fiyatları (Binance 24hr + CoinGecko & GenelPara Yedekli)
+  // 1B. Truncgil Yedeği (GenelPara limit veya hata verirse)
+  if (!goldFetched) {
+    try {
+      const trRes = await axios.get('https://finans.truncgil.com/today.json', {
+        headers: { 'User-Agent': 'Mozilla/5.0' },
+        timeout: 6000
+      });
+      const td = trRes.data;
+      if (td && typeof td === 'object') {
+        const usdNode = td['USD'] || td['ABD DOLARI'];
+        if (usdNode) {
+          const uVal = parseTRNumber(usdNode['Satış'] || usdNode['satis']);
+          if (uVal > 10) usdTry = uVal;
+        }
+        const trGoldMap = {
+          'GA': td['gram-altin'] || td['GRAM ALTIN'] || td['GA'],
+          'C': td['ceyrek-altin'] || td['ÇEYREK ALTIN'] || td['C'],
+          'Y': td['yarim-altin'] || td['YARIM ALTIN'] || td['Y'],
+          'T': td['tam-altin'] || td['TAM ALTIN'] || td['T'],
+          'ATA': td['ata-altin'] || td['ATA ALTIN'] || td['ATA'],
+          'CMR': td['cumhuriyet-altini'] || td['CUMHURİYET ALTINI'] || td['CMR'],
+          '22': td['22-ayar-bilezik'] || td['22 AYAR BİLEZİK'],
+          'GAG': td['gumus'] || td['GÜMÜŞ']
+        };
+        for (const [code, node] of Object.entries(trGoldMap)) {
+          if (node) {
+            const pTRY = parseTRNumber(node['Satış'] || node['satis']);
+            const chgVal = parseTRNumber(node['Değişim'] || node['degisim']);
+            if (pTRY > 0) {
+              quotes[code] = {
+                symbol: code,
+                name: DEFAULT_PRICES[code]?.name || code,
+                priceTRY: pTRY,
+                priceUSD: pTRY / usdTry,
+                change: `${chgVal >= 0 ? '+' : ''}${chgVal.toFixed(2)}`,
+                category: 'gold'
+              };
+              if (code === 'GA') goldFetched = true;
+            }
+          }
+        }
+      }
+    } catch (trErr) {
+      console.warn('[PORTFOLIO] Truncgil gold fallback warning:', trErr.message);
+    }
+  }
+
+  // 2. Canlı Kripto Fiyatları (Binance 24hr + PAXGUSDT Ons Altın + CoinGecko Yedekli)
   let cryptoSuccess = false;
   try {
-    const cryptoSymbols = '["BTCUSDT","ETHUSDT","SOLUSDT","AVAXUSDT","BNBUSDT","XRPUSDT","DOGEUSDT"]';
+    const cryptoSymbols = '["BTCUSDT","ETHUSDT","SOLUSDT","AVAXUSDT","BNBUSDT","XRPUSDT","DOGEUSDT","PAXGUSDT"]';
     const binanceRes = await axios.get(`https://api.binance.com/api/v3/ticker/24hr?symbols=${encodeURIComponent(cryptoSymbols)}`, { timeout: 6000 });
     if (Array.isArray(binanceRes.data) && binanceRes.data.length > 0) {
       for (const item of binanceRes.data) {
+        if (item.symbol === 'PAXGUSDT') {
+          // Eğer yerel altın API'leri erişilemezse, canlı Ons Altın (XAU/USD) ve USD/TRY'den gerçek altın fiyatlarını hesapla
+          const onsUSD = parseFloat(item.lastPrice) || 0;
+          const onsChg = parseFloat(item.priceChangePercent) || 0;
+          if (!goldFetched && onsUSD > 1500 && usdTry > 10) {
+            const gramTRY = (onsUSD / 31.1034768) * usdTry;
+            const chgStr = `${onsChg >= 0 ? '+' : ''}${onsChg.toFixed(2)}`;
+            const calcGold = {
+              'GA': gramTRY,
+              'C': gramTRY * 1.635,
+              'Y': gramTRY * 3.27,
+              'T': gramTRY * 6.54,
+              'ATA': gramTRY * 6.73,
+              'CMR': gramTRY * 6.68,
+              '22': gramTRY * 0.916,
+              'GAG': gramTRY / 82
+            };
+            for (const [code, pTRY] of Object.entries(calcGold)) {
+              quotes[code] = {
+                symbol: code,
+                name: DEFAULT_PRICES[code]?.name || code,
+                priceTRY: Math.round(pTRY * 100) / 100,
+                priceUSD: (Math.round(pTRY * 100) / 100) / usdTry,
+                change: chgStr,
+                category: 'gold'
+              };
+            }
+            goldFetched = true;
+          }
+          continue;
+        }
         const coin = item.symbol.replace('USDT', '');
         const pUSD = parseFloat(item.lastPrice) || 0;
         const chg = parseFloat(item.priceChangePercent) || 0;

@@ -369,6 +369,15 @@ function initDb() {
     { table: 'users', name: 'is_banned', def: 'INTEGER DEFAULT 0' },
     { table: 'users', name: 'ban_reason', def: 'TEXT' },
     { table: 'users', name: 'banned_at', def: 'TEXT' },
+    // Premium'un kaynağı: revenuecat | admin (iade/bitiş yalnızca RevenueCat kaynaklı Premium'u düşürür)
+    { table: 'users', name: 'subscription_source', def: 'TEXT' },
+    { table: 'users', name: 'banned_until', def: 'TEXT' }, // NULL = süresiz ban
+    // ── KVKK / İYS kayıtları: aydınlatma onayı, yurt dışı aktarım açık rızası, duyuru e-postası izni
+    { table: 'users', name: 'kvkk_accepted_at', def: 'TEXT' },
+    { table: 'users', name: 'kvkk_version', def: 'TEXT' },
+    { table: 'users', name: 'abroad_consent_at', def: 'TEXT' },
+    { table: 'users', name: 'email_updates_consent', def: 'INTEGER DEFAULT 0' },
+    { table: 'users', name: 'email_consent_at', def: 'TEXT' },
   ];
 
   // Migration: Tablo şemalarını tek seferde paralel kontrol et (24 ardışık HTTP turu yerine 1 paralel kontrol)

@@ -102,10 +102,36 @@ function clearRevokedSessionCache() {
 async function loadAuthUser(uid) {
   const hit = userCache.get(uid);
   if (hit && Date.now() - hit.at < CACHE_MS) return hit.user;
-  const r = await db.execute({ sql: 'SELECT id, email, role, token_version, is_banned, ban_reason FROM users WHERE id = ?', args: [uid] });
+  const r = await db.execute({ sql: 'SELECT id, email, role, token_version, is_banned, ban_reason, banned_until FROM users WHERE id = ?', args: [uid] });
   const user = r.rows[0] || null;
+  if (user) await liftExpiredBan(user);
   userCache.set(uid, { user, at: Date.now() });
   return user;
+}
+
+/** Süreli ban dolduysa kaldırır (user nesnesini de günceller). true → ban kalktı */
+async function liftExpiredBan(user) {
+  if (!user || Number(user.is_banned) !== 1 || !user.banned_until) return false;
+  const until = Date.parse(user.banned_until);
+  if (!until || until > Date.now()) return false;
+  try {
+    await db.execute({
+      sql: 'UPDATE users SET is_banned = 0, ban_reason = NULL, banned_at = NULL, banned_until = NULL WHERE id = ?',
+      args: [user.id],
+    });
+  } catch { /* bir sonraki istekte yeniden denenir */ }
+  user.is_banned = 0;
+  user.ban_reason = null;
+  user.banned_until = null;
+  return true;
+}
+
+/** Ban mesajı: süreliyse bitiş tarihini ekler */
+function banMessage(user) {
+  const reason = user.ban_reason || 'Hesabınız kurallara aykırı davranış nedeniyle askıya alınmıştır.';
+  if (!user.banned_until) return reason;
+  const d = new Date(user.banned_until);
+  return isNaN(d) ? reason : `${reason} (Ban bitişi: ${d.toLocaleString('tr-TR', { timeZone: 'Europe/Istanbul' })})`;
 }
 
 /** Şifre değişimi, hesap silme vb. sonrası önbelleği temizler */
@@ -135,7 +161,7 @@ async function authenticate(token) {
 
 // Oturum gerektirmeyen uçlar (giriş, kayıt, şifre sıfırlama, herkese açık kurlar, ödeme webhook'u)
 const PUBLIC = [
-  /^\/api\/auth\/(login|register|google|forgot-password|verify-reset-code|reset-password|verify-email|verify-link|resend-verification)\/?$/,
+  /^\/api\/auth\/(login|register|google|forgot-password|verify-reset-code|reset-password|verify-email|verify-link|resend-verification|unsubscribe)\/?$/,
   /^\/api\/exchange(\/|$)/,
   /^\/api\/subscription\/webhook\/?$/,
   /^\/api\/errors\/?$/,
@@ -165,7 +191,8 @@ async function requireAuth(req, res, next) {
         success: false,
         code: 'USER_BANNED',
         isBanned: true,
-        banReason: user.ban_reason || 'Hesabınız kurallara aykırı davranış nedeniyle askıya alınmıştır.',
+        banReason: banMessage(user),
+        bannedUntil: user.banned_until || null,
         error: 'Hesabınız askıya alınmıştır.'
       });
     }
@@ -211,4 +238,7 @@ function requireAdmin(req, res, next) {
   next();
 }
 
-module.exports = { signToken, verifyToken, authenticate, requireAuth, ensureSelfParam, requireAdmin, invalidateUser, isAdmin, revokeSession };
+/** E-postadaki abonelikten çıkma bağlantısı için kullanıcıya özel imza */
+const unsubscribeSig = (uid) => sign('unsub:' + uid);
+
+module.exports = { unsubscribeSig, signToken, verifyToken, authenticate, requireAuth, ensureSelfParam, requireAdmin, invalidateUser, isAdmin, revokeSession, liftExpiredBan, banMessage };

@@ -39,12 +39,19 @@ function rateLimited(userId, kind, max, windowMs) {
   return false;
 }
 
-const MSG_TYPES = new Set(['text', 'split_bill']);
+const MSG_TYPES = new Set(['text', 'split_bill', 'voice']);
 const clean = (v, n) => String(v ?? '').trim().slice(0, n);
 
-/** Mesaj ek verisi: yalnızca bölüşüm isteğinin tutar + açıklaması saklanır */
+/** Mesaj ek verisi: bölüşüm isteği veya sesli mesaj süresi saklanır */
 function sanitizeMetadata(type, metadata) {
-  if (type !== 'split_bill' || !metadata || typeof metadata !== 'object') return {};
+  if (!metadata || typeof metadata !== 'object') return {};
+  if (type === 'voice') {
+    const dur = Number(metadata.durationSec);
+    return {
+      durationSec: Number.isFinite(dur) && dur >= 0 && dur <= 600 ? Math.round(dur) : 0,
+    };
+  }
+  if (type !== 'split_bill') return {};
   const amount = Number(metadata.amount);
   return {
     amount: Number.isFinite(amount) && amount > 0 && amount < 1e9 ? Math.round(amount * 100) / 100 : 0,
@@ -167,7 +174,7 @@ router.get('/friends', async (req, res) => {
         displayName: publicName(f),
         avatar: f.avatar || '',
         friendCode: f.friend_code || '',
-        lastMessage: f.last_message || null,
+        lastMessage: f.last_message && String(f.last_message).startsWith('data:audio') ? '🎤 Sesli Mesaj' : (f.last_message || null),
         lastMessageAt: f.last_message_at || null,
         unreadCount: Number(f.unread_count || 0)
       }));
@@ -386,12 +393,14 @@ router.get('/messages/:friendId', async (req, res) => {
     const messages = r.rows.map(m => {
       let metadata = {};
       try { metadata = m.metadata ? JSON.parse(m.metadata) : {}; } catch { metadata = {}; }
+      const isAudioContent = typeof m.content === 'string' && m.content.startsWith('data:audio');
+      const resolvedType = isAudioContent ? 'voice' : (MSG_TYPES.has(m.msg_type) ? m.msg_type : 'text');
       return {
         id: m.id,
         senderId: m.sender_id,
         receiverId: m.receiver_id,
         content: m.content,
-        type: MSG_TYPES.has(m.msg_type) ? m.msg_type : 'text',
+        type: resolvedType,
         metadata,
         isRead: Boolean(m.is_read),
         createdAt: m.created_at,
@@ -411,12 +420,17 @@ router.post('/messages', async (req, res) => {
   try {
     const userId = req.authUserId;
     const receiverId = String(req.body?.receiverId || '');
-    const content = clean(req.body?.content, 1000);
-    const type = MSG_TYPES.has(req.body?.type) ? req.body.type : 'text';
+    const rawContent = String(req.body?.content ?? '').trim();
+    const isVoicePayload = req.body?.type === 'voice' || rawContent.startsWith('data:audio/');
+    const type = isVoicePayload ? 'voice' : (MSG_TYPES.has(req.body?.type) ? req.body.type : 'text');
+    const content = type === 'voice' ? rawContent.slice(0, 2500000) : clean(rawContent, 1000);
     const metadata = sanitizeMetadata(type, req.body?.metadata);
 
     if (!receiverId || !content) {
       return res.status(400).json({ success: false, error: 'Alıcı ve mesaj içeriği zorunludur' });
+    }
+    if (type === 'voice' && !content.startsWith('data:audio/')) {
+      return res.status(400).json({ success: false, error: 'Geçersiz sesli mesaj formatı' });
     }
     if (rateLimited(userId, 'message', 30, 60 * 1000)) {
       return res.status(429).json({ success: false, error: 'Çok hızlı mesaj gönderiyorsun. Biraz bekle.' });
@@ -442,10 +456,13 @@ router.post('/messages', async (req, res) => {
     sendWsEvent(receiverId, { type: 'CHAT_MESSAGE', message: messageObj });
 
     const sender = (await db.execute({ sql: `SELECT display_name FROM users WHERE id = ?`, args: [userId] })).rows[0];
+    const notifBody = type === 'voice'
+      ? '🎤 Sesli Mesaj gönderdi'
+      : (content.length > 60 ? content.slice(0, 60) + '...' : content);
     sendToUser(receiverId, {
       type: 'CHAT',
       title: `💬 ${publicName(sender)}`,
-      body: content.length > 60 ? content.slice(0, 60) + '...' : content
+      body: notifBody
     }).catch(() => {});
 
     res.json({ success: true, message: { ...messageObj, isMine: true } });

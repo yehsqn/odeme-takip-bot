@@ -8,7 +8,7 @@ const bcrypt = require('bcryptjs');
 const nodemailer = require('nodemailer');
 const { getBot } = require('../bot');
 const { CUSTOMER_TYPE, PAYMENT_PERMISSIONS, PAYMENT_METHOD_LABELS } = require('../constants/customerTypes');
-const { signToken, ensureSelfParam, invalidateUser, revokeSession } = require('../middleware/session');
+const { unsubscribeSig, signToken, ensureSelfParam, invalidateUser, revokeSession, liftExpiredBan, banMessage } = require('../middleware/session');
 const { sendMail } = require('../mailer');
 
 // Yol parametresindeki kullanıcı kimliği oturum sahibi olmalı (/user/:id, /premium/:id, /pairing-status/:userId)
@@ -188,10 +188,36 @@ async function sendSession(res, row, extra = {}, req = null) {
   res.json({ success: true, user: formatUser(row), token: signToken(row, sid), sessionId: sid, ...extra });
 }
 
+// KVKK aydınlatma metni sürümü: metin değişince artırılır, kullanıcılardan yeniden onay istenir
+const KVKK_VERSION = '2026-10-28';
+const nowIso = () => new Date().toISOString();
+
+/** Kayıt / ilk girişte verilen KVKK onayı ve isteğe bağlı duyuru e-postası izni */
+async function saveConsents(userId, { kvkkAccepted, abroadConsent, emailUpdates }) {
+  const at = nowIso();
+  if (kvkkAccepted === true) {
+    await db.execute({ sql: 'UPDATE users SET kvkk_accepted_at = ?, kvkk_version = ? WHERE id = ?', args: [at, KVKK_VERSION, userId] });
+  }
+  if (abroadConsent === true) {
+    await db.execute({ sql: 'UPDATE users SET abroad_consent_at = ? WHERE id = ?', args: [at, userId] });
+  }
+  if (typeof emailUpdates === 'boolean') {
+    await db.execute({ sql: 'UPDATE users SET email_updates_consent = ?, email_consent_at = ? WHERE id = ?', args: [emailUpdates ? 1 : 0, at, userId] });
+  }
+}
+
 // Helper: row → user response
 function formatUser(row) {
   if (!row) return null;
-  const isActive = row.is_premium && (!row.subscription_expiry || new Date(row.subscription_expiry) > new Date());
+  const now = new Date();
+  const hasExpiry = !!row.subscription_expiry;
+  const expiryDate = hasExpiry ? new Date(row.subscription_expiry) : null;
+  const isExpired = expiryDate ? expiryDate <= now : false;
+  const isActive = Boolean(row.is_premium && (!expiryDate || !isExpired));
+  const subType = row.subscription_type || row.subscription_plan || 'free';
+  const isTrial = subType === 'trial';
+  const trialExpired = !isActive && (isTrial || (hasExpiry && isExpired));
+  const canStartTrial = !isActive && !hasExpiry && subType !== 'trial';
   const customerType = String(row.customer_type || CUSTOMER_TYPE.INDIVIDUAL).toUpperCase();
   const friendCode = row.friend_code || null; // rastgele kod /api/social/me ile atanır
   return {
@@ -201,18 +227,25 @@ function formatUser(row) {
     hasPin: !!row.pin,
     hasIncomePassword: !!row.income_expense_password,
     isPremium: !!isActive,
+    isTrial: !!(isActive && isTrial),
+    trialExpired: !!trialExpired,
+    canStartTrial: !!canStartTrial,
     language: row.language || 'tr',
     pairingCode: row.pairing_code || '',
-    subscriptionType: row.subscription_type || 'free',
-    subscriptionStatus: row.subscription_status || 'active',
+    subscriptionType: isActive ? subType : (trialExpired ? 'expired_trial' : 'free'),
+    subscriptionStatus: isActive ? (row.subscription_status || 'active') : (trialExpired ? 'expired' : 'free'),
     subscriptionExpiry: row.subscription_expiry || null,
     aiAnalysisTokens: isActive ? 999 : (row.ai_analysis_tokens ?? 1),
     displayName: row.display_name || '',
     createdAt: row.created_at || null,
     avatar: row.avatar || '',
     friendCode,
-    isBanned: Number(row.is_banned) === 1,
+    // KVKK: güncel aydınlatma metni onaylanmış ve yurt dışı aktarım rızası verilmiş mi
+    consentRequired: !(row.kvkk_accepted_at && row.kvkk_version === KVKK_VERSION && row.abroad_consent_at),
+    emailUpdatesConsent: Number(row.email_updates_consent) === 1,
+    isBanned: Number(row.is_banned) === 1 && !(row.banned_until && Date.parse(row.banned_until) <= Date.now()),
     banReason: row.ban_reason || null,
+    bannedUntil: row.banned_until || null,
     // Müşteri tipi bilgileri
     customerType,
     allowedPaymentMethods: (PAYMENT_PERMISSIONS[customerType] || []).map(m => ({
@@ -252,12 +285,13 @@ router.post('/login', async (req, res) => {
 
     if (!isPasswordValid) return res.status(401).json({ success: false, error: 'E-posta veya şifre hatalı' });
 
-    if (Number(user.is_banned) === 1) {
+    if (Number(user.is_banned) === 1 && !(await liftExpiredBan(user))) {
       return res.status(403).json({
         success: false,
         code: 'USER_BANNED',
         isBanned: true,
-        banReason: user.ban_reason || 'Hesabınız kurallara aykırı davranış nedeniyle askıya alınmıştır.',
+        banReason: banMessage(user),
+        bannedUntil: user.banned_until || null,
         error: 'Hesabınız askıya alınmıştır.'
       });
     }
@@ -285,8 +319,14 @@ router.post('/register', async (req, res) => {
       lastName,
       // Kurumsal alanlar
       companyName,
+      kvkkAccepted,
+      abroadConsent,
+      emailUpdates,
     } = req.body;
 
+    if (kvkkAccepted !== true || abroadConsent !== true) {
+      return res.status(400).json({ success: false, error: 'Kayıt için aydınlatma metnini okuduğunu onaylaman ve yurt dışı aktarım iznini vermen gerekir.' });
+    }
     if (!email || !password) return res.status(400).json({ success: false, error: 'Email ve şifre gerekli' });
     if (password.length < 6) return res.status(400).json({ success: false, error: 'Şifre en az 6 karakter olmalıdır' });
 
@@ -319,10 +359,12 @@ router.post('/register', async (req, res) => {
     // Güvenlik: Şifreyi bcrypt ile hashle
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // Kullanıcı oluştur
+    // Kullanıcı oluştur (Yeni kayıtlara otomatik 3 günlük PRO Deneme tanımla)
+    const trialExpiry = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString();
     await db.execute({
-      sql: 'INSERT INTO users (id, email, password, customer_type, display_name, email_verified) VALUES (?, ?, ?, ?, ?, 0)',
-      args: [id, email.toLowerCase().trim(), hashedPassword, customerType, displayName]
+      sql: `INSERT INTO users (id, email, password, customer_type, display_name, email_verified, is_premium, subscription_type, subscription_plan, subscription_status, subscription_expiry, premium_expires_at, ai_analysis_tokens)
+            VALUES (?, ?, ?, ?, ?, 0, 1, 'trial', 'trial', 'active', ?, ?, 999)`,
+      args: [id, email.toLowerCase().trim(), hashedPassword, customerType, displayName, trialExpiry, trialExpiry]
     });
 
     // Profil oluştur
@@ -343,11 +385,14 @@ router.post('/register', async (req, res) => {
       });
     }
 
+    await saveConsents(id, { kvkkAccepted, abroadConsent, emailUpdates: emailUpdates === true });
+
     // Yeni oluşturulan kullanıcıyı getir ve formatla
     const emailSent = await issueVerificationCode(id, email.toLowerCase().trim());
     res.json({ success: true, needsVerification: true, email: email.toLowerCase().trim(), emailSent });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    console.error('[AUTH] Kayıt hatası:', err.message);
+    res.status(500).json({ success: false, error: 'Kayıt sırasında bir hata oluştu.' });
   }
 });
 
@@ -440,7 +485,7 @@ function getAllowedGoogleAudiences() {
 // POST /api/auth/google
 router.post('/google', async (req, res) => {
   try {
-    const { credential, accessToken } = req.body;
+    const { credential, accessToken, kvkkAccepted, abroadConsent, emailUpdates } = req.body;
     if (!credential && !accessToken) return res.status(400).json({ success: false, error: 'Google token gerekli' });
 
     const validAudiences = getAllowedGoogleAudiences();
@@ -501,9 +546,11 @@ router.post('/google', async (req, res) => {
 
     if (!user) {
       const id = genId();
+      const trialExpiry = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString();
       await db.execute({
-        sql: `INSERT INTO users (id, email, password, google_id, display_name, avatar, customer_type) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        args: [id, email, 'google_oauth_' + crypto.randomBytes(16).toString('hex'), payload.sub, payload.name || '', payload.picture || '', CUSTOMER_TYPE.INDIVIDUAL]
+        sql: `INSERT INTO users (id, email, password, google_id, display_name, avatar, customer_type, is_premium, subscription_type, subscription_plan, subscription_status, subscription_expiry, premium_expires_at, ai_analysis_tokens)
+              VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'trial', 'trial', 'active', ?, ?, 999)`,
+        args: [id, email, 'google_oauth_' + crypto.randomBytes(16).toString('hex'), payload.sub, payload.name || '', payload.picture || '', CUSTOMER_TYPE.INDIVIDUAL, trialExpiry, trialExpiry]
       });
 
       const now = new Date().toISOString();
@@ -519,6 +566,9 @@ router.post('/google', async (req, res) => {
         console.warn('Google user profile insert warning:', profErr.message);
       }
 
+      if (kvkkAccepted === true && abroadConsent === true) {
+        await saveConsents(id, { kvkkAccepted, abroadConsent, emailUpdates: emailUpdates === true });
+      }
       result = await db.execute({ sql: 'SELECT * FROM users WHERE id = ?', args: [id] });
       user = result.rows[0];
     } else if (!user.google_id) {
@@ -530,12 +580,13 @@ router.post('/google', async (req, res) => {
       user = result.rows[0];
     }
 
-    if (Number(user.is_banned) === 1) {
+    if (Number(user.is_banned) === 1 && !(await liftExpiredBan(user))) {
       return res.status(403).json({
         success: false,
         code: 'USER_BANNED',
         isBanned: true,
-        banReason: user.ban_reason || 'Hesabınız kurallara aykırı davranış nedeniyle askıya alınmıştır.',
+        banReason: banMessage(user),
+        bannedUntil: user.banned_until || null,
         error: 'Hesabınız askıya alınmıştır.'
       });
     }
@@ -563,6 +614,51 @@ router.post('/google', async (req, res) => {
   } catch (err) {
     console.error('Google Auth Error:', err.message);
     res.status(401).json({ success: false, error: 'Google ile giriş doğrulanamadı. Lütfen tekrar deneyin.' });
+  }
+});
+
+// POST /api/auth/consent — KVKK aydınlatma onayı + yurt dışı aktarım rızası (Google ile girenler, metin güncellenince)
+router.post('/consent', async (req, res) => {
+  try {
+    const { kvkkAccepted, abroadConsent, emailUpdates } = req.body || {};
+    if (kvkkAccepted !== true || abroadConsent !== true) {
+      return res.status(400).json({ success: false, error: 'Devam etmek için aydınlatma metnini onaylaman gerekir.' });
+    }
+    await saveConsents(req.authUserId, { kvkkAccepted, abroadConsent, emailUpdates: typeof emailUpdates === 'boolean' ? emailUpdates : undefined });
+    const row = (await db.execute({ sql: 'SELECT * FROM users WHERE id = ?', args: [req.authUserId] })).rows[0];
+    res.json({ success: true, user: formatUser(row) });
+  } catch (err) {
+    console.error('[AUTH] Onay kaydı hatası:', err.message);
+    res.status(500).json({ success: false, error: 'Onay kaydedilemedi.' });
+  }
+});
+
+// PUT /api/auth/email-preferences — duyuru e-postası iznini ver / geri al (İYS)
+router.put('/email-preferences', async (req, res) => {
+  try {
+    if (typeof req.body?.emailUpdates !== 'boolean') return res.status(400).json({ success: false, error: 'Geçersiz tercih' });
+    await saveConsents(req.authUserId, { emailUpdates: req.body.emailUpdates });
+    res.json({ success: true, emailUpdatesConsent: req.body.emailUpdates });
+  } catch (err) {
+    res.status(500).json({ success: false, error: 'Tercih kaydedilemedi.' });
+  }
+});
+
+// GET|POST /api/auth/unsubscribe?u=<id>&s=<imza> — e-postadaki abonelikten çıkma bağlantısı (POST: Gmail tek tık)
+router.all('/unsubscribe', async (req, res) => {
+  const page = (msg) => res.type('html').send(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PayPulse</title><body style="font-family:Arial,sans-serif;background:#0f172a;color:#e2e8f0;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0"><div style="max-width:420px;padding:28px;border:1px solid #334155;border-radius:16px;text-align:center"><h2 style="color:#38bdf8;margin-top:0">PayPulse</h2><p>${msg}</p></div></body>`);
+  try {
+    const uid = String(req.query.u || '');
+    const sig = String(req.query.s || '');
+    const expected = unsubscribeSig(uid);
+    if (!/^[a-f0-9]{24}$/.test(uid) || sig.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) {
+      return res.status(400) && page('Bağlantı geçersiz. Tercihini uygulamada Ayarlar → Bildirimler bölümünden değiştirebilirsin.');
+    }
+    await saveConsents(uid, { emailUpdates: false });
+    page('Duyuru e-postalarından çıkarıldın. Artık sürüm ve duyuru e-postası almayacaksın.');
+  } catch {
+    res.status(500);
+    page('Bir hata oluştu, lütfen daha sonra tekrar dene.');
   }
 });
 
@@ -1020,10 +1116,8 @@ function renderVerificationHtml({ success, error, message }) {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>PayPulse — ${success ? 'E-posta Doğrulandı' : 'Doğrulama Hatası'}</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <style>
-    * { margin:0; padding:0; box-sizing:border-box; font-family:'Plus Jakarta Sans',-apple-system,BlinkMacSystemFont,sans-serif; }
+    * { margin:0; padding:0; box-sizing:border-box; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; }
     body {
       min-height:100vh;
       display:flex;
@@ -1207,6 +1301,18 @@ router.post('/delete-account', async (req, res) => {
       { sql: 'DELETE FROM notifications WHERE user_id = ?', args: [userId] },
       { sql: 'DELETE FROM individual_profiles WHERE user_id = ?', args: [userId] },
       { sql: 'DELETE FROM corporate_profiles WHERE user_id = ?', args: [userId] },
+      // KVKK: hesapla birlikte kullanıcıya ait tüm kayıtlar silinir
+      { sql: 'DELETE FROM wallet_transfers WHERE user_id = ?', args: [userId] },
+      { sql: 'DELETE FROM wallets WHERE user_id = ?', args: [userId] },
+      { sql: 'DELETE FROM portfolio_items WHERE user_id = ?', args: [userId] },
+      { sql: 'DELETE FROM user_notes WHERE user_id = ?', args: [userId] },
+      { sql: 'DELETE FROM ai_reports WHERE user_id = ?', args: [userId] },
+      { sql: 'DELETE FROM game_profiles WHERE user_id = ?', args: [userId] },
+      { sql: 'DELETE FROM messages WHERE sender_id = ? OR receiver_id = ?', args: [userId, userId] },
+      { sql: 'DELETE FROM friendships WHERE requester_id = ? OR recipient_id = ?', args: [userId, userId] },
+      { sql: 'DELETE FROM blocked_users WHERE blocker_id = ? OR blocked_id = ?', args: [userId, userId] },
+      { sql: 'DELETE FROM user_reports WHERE reporter_id = ? OR reported_user_id = ?', args: [userId, userId] },
+      { sql: 'DELETE FROM user_sessions WHERE user_id = ?', args: [userId] },
       { sql: 'UPDATE feedbacks SET user_id = NULL, user_email = NULL WHERE user_id = ?', args: [userId] },
       { sql: 'UPDATE app_errors SET user_id = NULL WHERE user_id = ?', args: [userId] },
       { sql: 'DELETE FROM users WHERE id = ?', args: [userId] },

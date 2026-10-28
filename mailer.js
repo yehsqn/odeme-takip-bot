@@ -10,11 +10,11 @@ const htmlToText = (html) => String(html || '')
   .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'")
   .replace(/[ \t]+/g, ' ').replace(/\n\s*\n+/g, '\n\n').trim();
 const replyTo = () => process.env.MAIL_REPLY_TO || 'yehsanefe20@gmail.com';
-const unsubscribeHeaders = () => ({
-  'List-Unsubscribe': `<mailto:${replyTo()}?subject=unsubscribe>`,
-});
+const unsubscribeHeaders = (url) => (url
+  ? { 'List-Unsubscribe': `<${url}>, <mailto:${replyTo()}?subject=unsubscribe>`, 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click' }
+  : { 'List-Unsubscribe': `<mailto:${replyTo()}?subject=unsubscribe>` });
 
-async function trySmtp({ to, subject, html, plain, attachments }) {
+async function trySmtp({ to, subject, html, plain, attachments, unsubscribeUrl }) {
   const smtpUser = process.env.SMTP_USER || process.env.EMAIL_USER;
   const smtpPass = process.env.SMTP_PASS || process.env.EMAIL_PASS;
   if (!smtpUser || !smtpPass) return null; // yapılandırılmamış
@@ -36,7 +36,7 @@ async function trySmtp({ to, subject, html, plain, attachments }) {
       html,
       text: plain,
       replyTo: replyTo(),
-      headers: unsubscribeHeaders(),
+      headers: unsubscribeHeaders(unsubscribeUrl),
       attachments,
     });
     return true;
@@ -46,7 +46,7 @@ async function trySmtp({ to, subject, html, plain, attachments }) {
   }
 }
 
-async function tryResend({ to, subject, html, plain, attachments }) {
+async function tryResend({ to, subject, html, plain, attachments, unsubscribeUrl }) {
   if (!process.env.RESEND_API_KEY) return null; // yapılandırılmamış
   try {
     const { Resend } = require('resend');
@@ -58,7 +58,7 @@ async function tryResend({ to, subject, html, plain, attachments }) {
       html,
       text: plain,
       replyTo: replyTo(),
-      headers: unsubscribeHeaders(),
+      headers: unsubscribeHeaders(unsubscribeUrl),
       attachments: attachments.map(x => ({ filename: x.filename, content: x.content.toString('base64') })),
     });
     if (error) {
@@ -77,10 +77,11 @@ async function tryResend({ to, subject, html, plain, attachments }) {
  *  - hesap e-postaları (kod, şifre sıfırlama, hatırlatma): önce Gmail SMTP (SMTP_USER + SMTP_PASS),
  *    Gmail alıcılarında gelen kutusuna düşme oranı yüksek; yoksa / hata verirse Resend
  *  - bulk: true (toplu duyurular): önce Resend (MAIL_FROM alan adı), Gmail'in günlük sınırını korumak için
+ *  - unsubscribeUrl: duyurularda tek tıkla abonelikten çıkma bağlantısı (İYS / Gmail toplu gönderici kuralları)
  * @returns {Promise<boolean>}
  */
-async function sendMail({ to, subject, html, text, attachments = [], bulk = false }) {
-  const msg = { to, subject, html, plain: text || htmlToText(html), attachments };
+async function sendMail({ to, subject, html, text, attachments = [], bulk = false, unsubscribeUrl = null }) {
+  const msg = { to, subject, html, plain: text || htmlToText(html), attachments, unsubscribeUrl };
   const order = bulk ? [tryResend, trySmtp] : [trySmtp, tryResend];
   let configured = false;
   for (const send of order) {
