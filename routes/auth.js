@@ -6,12 +6,11 @@ const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const nodemailer = require('nodemailer');
-const { getBot } = require('../bot');
 const { CUSTOMER_TYPE, PAYMENT_PERMISSIONS, PAYMENT_METHOD_LABELS } = require('../constants/customerTypes');
 const { unsubscribeSig, signToken, ensureSelfParam, invalidateUser, revokeSession, liftExpiredBan, banMessage } = require('../middleware/session');
 const { sendMail } = require('../mailer');
 
-// Yol parametresindeki kullanıcı kimliği oturum sahibi olmalı (/user/:id, /premium/:id, /pairing-status/:userId)
+// Yol parametresindeki kullanıcı kimliği oturum sahibi olmalı (/user/:id, /premium/:id)
 router.param('id', ensureSelfParam);
 router.param('userId', ensureSelfParam);
 
@@ -223,7 +222,7 @@ function formatUser(row) {
   return {
     id: row.id,
     email: row.email,
-    telegramChatId: row.telegram_chat_id || '',
+    emailBackupEnabled: row.email_backup_enabled !== 0,
     hasPin: !!row.pin,
     hasIncomePassword: !!row.income_expense_password,
     isPremium: !!isActive,
@@ -231,7 +230,6 @@ function formatUser(row) {
     trialExpired: !!trialExpired,
     canStartTrial: !!canStartTrial,
     language: row.language || 'tr',
-    pairingCode: row.pairing_code || '',
     subscriptionType: isActive ? subType : (trialExpired ? 'expired_trial' : 'free'),
     subscriptionStatus: isActive ? (row.subscription_status || 'active') : (trialExpired ? 'expired' : 'free'),
     subscriptionExpiry: row.subscription_expiry || null,
@@ -644,6 +642,17 @@ router.put('/email-preferences', async (req, res) => {
   }
 });
 
+// PUT /api/auth/email-backup — gece e-posta yedeğini aç / kapat
+router.put('/email-backup', async (req, res) => {
+  try {
+    if (typeof req.body?.enabled !== 'boolean') return res.status(400).json({ success: false, error: 'Geçersiz tercih' });
+    await db.execute({ sql: 'UPDATE users SET email_backup_enabled = ? WHERE id = ?', args: [req.body.enabled ? 1 : 0, req.authUserId] });
+    res.json({ success: true, emailBackupEnabled: req.body.enabled });
+  } catch (err) {
+    res.status(500).json({ success: false, error: 'Tercih kaydedilemedi.' });
+  }
+});
+
 // GET|POST /api/auth/unsubscribe?u=<id>&s=<imza> — e-postadaki abonelikten çıkma bağlantısı (POST: Gmail tek tık)
 router.all('/unsubscribe', async (req, res) => {
   const page = (msg) => res.type('html').send(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PayPulse</title><body style="font-family:Arial,sans-serif;background:#0f172a;color:#e2e8f0;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0"><div style="max-width:420px;padding:28px;border:1px solid #334155;border-radius:16px;text-align:center"><h2 style="color:#38bdf8;margin-top:0">PayPulse</h2><p>${msg}</p></div></body>`);
@@ -653,6 +662,10 @@ router.all('/unsubscribe', async (req, res) => {
     const expected = unsubscribeSig(uid);
     if (!/^[a-f0-9]{24}$/.test(uid) || sig.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) {
       return res.status(400) && page('Bağlantı geçersiz. Tercihini uygulamada Ayarlar → Bildirimler bölümünden değiştirebilirsin.');
+    }
+    if (req.query.type === 'backup') {
+      await db.execute({ sql: 'UPDATE users SET email_backup_enabled = 0 WHERE id = ?', args: [uid] });
+      return page('Yedek e-postaları kapatıldı. Dilersen uygulamada Ayarlar → Bildirimler bölümünden yeniden açabilirsin.');
     }
     await saveConsents(uid, { emailUpdates: false });
     page('Duyuru e-postalarından çıkarıldın. Artık sürüm ve duyuru e-postası almayacaksın.');
@@ -760,8 +773,7 @@ router.post('/verify-income-password', async (req, res) => {
   }
 });
 
-// Gelir-gider şifresi kurtarma: yalnızca bağlı Telegram üzerinden (/gelirgidersifre).
-// Doğrulamasız sıfırlama ucu güvenlik nedeniyle kaldırıldı.
+// Doğrulamasız gelir-gider şifresi sıfırlama ucu güvenlik nedeniyle kaldırıldı.
 
 // POST /api/auth/change-password
 router.post('/change-password', async (req, res) => {
@@ -788,35 +800,6 @@ router.post('/change-password', async (req, res) => {
     res.json({ success: true, token: signToken(fresh.rows[0]) });
   } catch (err) {
     res.status(500).json({ success: false, error: 'Şifre güncellenirken hata oluştu' });
-  }
-});
-
-// POST /api/auth/pairing-code
-router.post('/pairing-code', async (req, res) => {
-  try {
-    const { userId } = req.body;
-    const code = genCode(); // tahmin edilemez 6 haneli eşleştirme kodu
-    await db.execute({ sql: 'UPDATE users SET pairing_code = ? WHERE id = ?', args: [code, userId] });
-    res.json({ success: true, code });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// GET /api/auth/pairing-status/:userId
-router.get('/pairing-status/:userId', async (req, res) => {
-  try {
-    const result = await db.execute({
-      sql: 'SELECT telegram_chat_id FROM users WHERE id = ?',
-      args: [req.params.userId]
-    });
-    const user = result.rows[0];
-    if (user && user.telegram_chat_id) {
-      return res.json({ success: true, chatId: user.telegram_chat_id });
-    }
-    res.json({ success: false });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
   }
 });
 
@@ -899,7 +882,7 @@ router.post('/forgot-password', async (req, res) => {
 
     const normalizedEmail = email.toLowerCase().trim();
     const result = await db.execute({
-      sql: 'SELECT id, email, telegram_chat_id FROM users WHERE email = ?',
+      sql: 'SELECT id, email FROM users WHERE email = ?',
       args: [normalizedEmail]
     });
     const user = result.rows[0];
@@ -920,20 +903,6 @@ router.post('/forgot-password', async (req, res) => {
 
     // E-posta gönderimi
     const emailSent = await sendResetEmail(user.email, code);
-
-    // Eğer bağlı bir Telegram varsa oraya da opsiyonel bildirim gönder (kullanıcı kolaylığı)
-    try {
-      const b = getBot();
-      if (b && user.telegram_chat_id) {
-        await b.sendMessage(
-          user.telegram_chat_id,
-          `🔐 <b>PayPulse Şifre Sıfırlama</b>\n\nDoğrulama kodunuz: <code>${code}</code>\n\nKodunuz e-posta adresinize de gönderildi (10 dk geçerlidir).`,
-          { parse_mode: 'HTML' }
-        );
-      }
-    } catch (tgErr) {
-      // Telegram hatası e-posta akışını etkilemesin
-    }
 
     if (!emailSent) {
       return res.status(500).json({ success: false, error: 'E-posta gönderilemedi. Sunucu loglarını kontrol edin.' });
@@ -1323,23 +1292,6 @@ router.post('/delete-account', async (req, res) => {
   } catch (err) {
     console.error('[AUTH] Hesap silme hatası:', err.message);
     res.status(500).json({ success: false, error: 'Hesap silinemedi. Lütfen tekrar dene.' });
-  }
-});
-
-// POST /api/auth/telegram/unlink
-router.post('/telegram/unlink', async (req, res) => {
-  try {
-    const { userId } = req.body;
-    if (!userId) return res.status(400).json({ success: false, error: 'userId gerekli' });
-
-    await db.execute({
-      sql: 'UPDATE users SET telegram_chat_id = NULL, pairing_code = NULL WHERE id = ?',
-      args: [userId]
-    });
-
-    res.json({ success: true, message: 'Telegram bağlantısı başarıyla kaldırıldı.' });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
   }
 });
 

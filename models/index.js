@@ -3,9 +3,6 @@ const mongoose = require('mongoose');
 const UserSchema = new mongoose.Schema({
   email: { type: String, required: true, unique: true },
   password: { type: String, required: true },
-  telegramChatId: String,
-  pairingCode: String,
-  pairingCodeExpiresAt: Date,
   pin: String,
   incomeExpensePassword: String,
   language: { type: String, default: 'tr' },
@@ -43,14 +40,8 @@ const PaymentSchema = new mongoose.Schema({
 const SettingsSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.Mixed, required: true, unique: true, index: true },
   cutOffDay: { type: Number, default: 10 },
-  telegram: {
-    botToken: { type: String, default: '' },
-    chatId: String,
-    notificationsEnabled: { type: Boolean, default: true }
-  },
   banks: { type: Array, default: [] },
   notificationDays: { type: Number, default: 3 },
-  lastTelegramNotification: String,
   backup: {
     enabled: { type: Boolean, default: false },
     time: { type: String, default: '00:00' }
