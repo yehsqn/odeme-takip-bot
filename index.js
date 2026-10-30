@@ -9,7 +9,6 @@ const rateLimit = require('express-rate-limit');
 const { initDb } = require('./db/turso');
 const { initWebSocket } = require('./websocket');
 const { initCron } = require('./cron');
-const { initTelegramBot } = require('./bot');
 
 const authRoutes = require('./routes/auth');
 const paymentRoutes = require('./routes/payments');
@@ -20,7 +19,6 @@ const dbRoutes = require('./routes/db');
 const backupRoutes = require('./routes/backup');
 const aiRoutes = require('./routes/ai');
 const notificationRoutes = require('./routes/notifications');
-const telegramRoutes = require('./routes/telegram');
 const customerProfileRoutes = require('./routes/customer-profile');
 const feedbackRoutes = require('./routes/feedback');
 const { requireAuth } = require('./middleware/session');
@@ -104,7 +102,7 @@ const authLimiter = rateLimit({
 app.get('/', (req, res) => {
   res.json({
     status: 'ok',
-    message: 'PayPulse API ve Telegram Botu aktif',
+    message: 'PayPulse API aktif',
     timestamp: new Date().toISOString()
   });
 });
@@ -147,7 +145,6 @@ app.use('/api/db', dbRoutes);
 app.use('/api/backup', backupRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/notifications', notificationRoutes);
-app.use('/api/telegram', telegramRoutes);
 app.use('/api/customer-profile', customerProfileRoutes);
 app.use('/api/feedback', feedbackRoutes);
 app.use('/api/game', gameRoutes);
@@ -198,9 +195,6 @@ initDb()
 
     // Cron zamanlayıcısını başlat
     initCron();
-
-    // Telegram bot dinleyicisini başlat
-    initTelegramBot();
 
     server.on('error', (err) => {
       if (err.code === 'EADDRINUSE') {

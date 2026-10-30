@@ -1,8 +1,8 @@
 const cron = require('node-cron');
 const { db } = require('./db/turso');
 const { sendToUser } = require('./websocket');
-const { getBot } = require('./bot');
 const { sendOverdueEmail } = require('./mailer');
+const { runEmailBackups } = require('./emailBackup');
 
 /**
  * Belirli bir kullanıcı veya saati gelen tüm kullanıcılar için ödeme hatırlatıcılarını kontrol eder.
@@ -156,26 +156,6 @@ async function checkUpcomingPayments(forceAll = false, targetUserId = null) {
           paymentId: row.id,
         });
 
-        // Telegram bildirimi gönder (Kullanıcının telegram hesabı bağlı ve izinli ise)
-        try {
-          const b = getBot();
-          if (b && userSetting.telegram_notifications_enabled !== 0) {
-            const userRow = await db.execute({
-              sql: 'SELECT telegram_chat_id FROM users WHERE id = ?',
-              args: [userId],
-            });
-            const tgChatId = userRow.rows[0]?.telegram_chat_id;
-            if (tgChatId) {
-              const tgText = `🔔 <b>${title}</b>\n\n${body}`;
-              b.sendMessage(tgChatId, tgText, { parse_mode: 'HTML' }).catch((err) => {
-                console.error(`[CRON TG HATA] ${userId}:`, err.message);
-              });
-            }
-          }
-        } catch (tgErr) {
-          console.error('[CRON TG HATA]:', tgErr.message);
-        }
-
         if (notifType === 'reminder_overdue') {
           if (!overdueByUser.has(userId)) overdueByUser.set(userId, []);
           overdueByUser.get(userId).push({
@@ -219,6 +199,11 @@ function initCron() {
   // PulseCity: her Pazartesi 00:10 (TR) haftalık lig turu
   cron.schedule('10 0 * * 1', () => {
     require('./routes/game').runWeeklyLeagues().catch(err => console.error('[GAME] Lig turu hatası:', err.message));
+  }, { timezone: 'Europe/Istanbul' });
+
+  // Her gece 03:00 (TR): verisi değişen kullanıcılara e-posta yedeği
+  cron.schedule('0 3 * * *', () => {
+    runEmailBackups().catch(err => console.error('[BACKUP] Gece yedeği hatası:', err.message));
   }, { timezone: 'Europe/Istanbul' });
 
   cron.schedule('* * * * *', async () => {

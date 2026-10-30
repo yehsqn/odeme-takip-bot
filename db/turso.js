@@ -19,9 +19,6 @@ function initDb() {
       id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(12)))),
       email TEXT NOT NULL UNIQUE,
       password TEXT NOT NULL,
-      telegram_chat_id TEXT,
-      pairing_code TEXT,
-      pairing_code_expires_at TEXT,
       pin TEXT,
       income_expense_password TEXT,
       language TEXT DEFAULT 'tr',
@@ -68,16 +65,12 @@ function initDb() {
       id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(12)))),
       user_id TEXT NOT NULL UNIQUE,
       cut_off_day INTEGER DEFAULT 10,
-      telegram_bot_token TEXT DEFAULT '',
-      telegram_chat_id TEXT,
-      telegram_notifications_enabled INTEGER DEFAULT 1,
       banks TEXT DEFAULT '[]',
       notification_time TEXT DEFAULT '09:00',
       notifications_enabled INTEGER DEFAULT 1,
       notification_days INTEGER DEFAULT 2,
       notify_on_due INTEGER DEFAULT 1,
       notify_overdue INTEGER DEFAULT 1,
-      last_telegram_notification TEXT,
       backup_enabled INTEGER DEFAULT 0,
       backup_time TEXT DEFAULT '00:00'
     )`,
@@ -373,6 +366,8 @@ function initDb() {
     { table: 'users', name: 'subscription_source', def: 'TEXT' },
     { table: 'users', name: 'banned_until', def: 'TEXT' }, // NULL = süresiz ban
     // ── KVKK / İYS kayıtları: aydınlatma onayı, yurt dışı aktarım açık rızası, duyuru e-postası izni
+    { table: 'users', name: 'email_backup_enabled', def: 'INTEGER DEFAULT 1' },
+    { table: 'users', name: 'email_backup_hash', def: 'TEXT' },
     { table: 'users', name: 'kvkk_accepted_at', def: 'TEXT' },
     { table: 'users', name: 'kvkk_version', def: 'TEXT' },
     { table: 'users', name: 'abroad_consent_at', def: 'TEXT' },
@@ -401,6 +396,19 @@ function initDb() {
         } catch (e) {
           console.warn(`[DB] Sütun ekleme uyarısı (${col.table}.${col.name}):`, e.message);
         }
+      }
+    }
+
+    // Telegram kaldırıldı: eski veritabanlarında kalan bağlantı kimliklerini ve bot anahtarlarını sil
+    const telegramColumns = [
+      ['users', 'telegram_chat_id', 'NULL'],
+      ['users', 'pairing_code', 'NULL'],
+      ['settings', 'telegram_chat_id', 'NULL'],
+      ['settings', 'telegram_bot_token', "''"],
+    ];
+    for (const [table, column, empty] of telegramColumns) {
+      if (existingColumns[table].has(column)) {
+        await db.execute(`UPDATE ${table} SET ${column} = ${empty} WHERE COALESCE(${column}, '') != ''`);
       }
     }
   } catch (err) {

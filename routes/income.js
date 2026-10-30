@@ -83,7 +83,6 @@ router.put('/:userId/:date', async (req, res) => {
   }
 });
 
-// Gelir-gider şifresi kurtarma yalnızca bağlı Telegram üzerinden (/gelirgidersifre);
-// doğrulamasız sıfırlama ucu güvenlik nedeniyle kaldırıldı.
+// Doğrulamasız gelir-gider şifresi sıfırlama ucu güvenlik nedeniyle kaldırıldı.
 
 module.exports = router;

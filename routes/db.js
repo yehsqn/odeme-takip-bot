@@ -69,41 +69,39 @@ function formatSettings(row) {
   };
 }
 
+// Kullanıcının tüm verisi (uygulama yüklemesi ve e-posta yedeği)
+async function loadUserData(userId) {
+  const [paymentsResult, settingsResult, incomesResult] = await Promise.all([
+    db.execute({ sql: 'SELECT * FROM payments WHERE user_id = ? ORDER BY id', args: [userId] }),
+    db.execute({ sql: 'SELECT * FROM settings WHERE user_id = ?', args: [userId] }),
+    db.execute({ sql: 'SELECT * FROM daily_incomes WHERE user_id = ? ORDER BY date', args: [userId] }),
+  ]);
+
+  const payments = paymentsResult.rows.map(formatPayment);
+  const settings = settingsResult.rows[0] ? formatSettings(settingsResult.rows[0]) : null;
+
+  // Convert dailyIncomes array to object keyed by date
+  const dailyIncomes = {};
+  incomesResult.rows.forEach(d => {
+    dailyIncomes[d.date] = {
+      cash: d.cash || 0,
+      cc: d.cc || 0,
+      salary: d.salary || 0,
+      insurance: d.insurance || 0,
+      other: d.other_income || 0,
+      expenses: JSON.parse(d.expenses || '[]'),
+      ...(() => { try { return JSON.parse(d.extra || '{}') || {}; } catch { return {}; } })(),
+    };
+  });
+
+  return { payments, settings, dailyIncomes };
+}
+
 // GET /api/db/load/:userId — bulk load all data
 router.get('/load/:userId', async (req, res) => {
   try {
-    const { userId } = req.params;
-
-    const [paymentsResult, settingsResult, incomesResult] = await Promise.all([
-      db.execute({ sql: 'SELECT * FROM payments WHERE user_id = ?', args: [userId] }),
-      db.execute({ sql: 'SELECT * FROM settings WHERE user_id = ?', args: [userId] }),
-      db.execute({ sql: 'SELECT * FROM daily_incomes WHERE user_id = ?', args: [userId] }),
-    ]);
-
-    const payments = paymentsResult.rows.map(formatPayment);
-    const settings = settingsResult.rows[0] ? formatSettings(settingsResult.rows[0]) : null;
-
-    // Convert dailyIncomes array to object keyed by date
-    const dailyIncomesObj = {};
-    incomesResult.rows.forEach(d => {
-      dailyIncomesObj[d.date] = {
-        cash: d.cash || 0,
-        cc: d.cc || 0,
-        salary: d.salary || 0,
-        insurance: d.insurance || 0,
-        other: d.other_income || 0,
-        expenses: JSON.parse(d.expenses || '[]'),
-        ...(() => { try { return JSON.parse(d.extra || '{}') || {}; } catch { return {}; } })(),
-      };
-    });
-
-    res.json({
-      success: true,
-      payments,
-      settings,
-      dailyIncomes: dailyIncomesObj,
-      banks: settings?.banks || [],
-    });
+    const data = await loadUserData(req.params.userId);
+    res.json({ success: true, ...data, banks: data.settings?.banks || [] });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -272,3 +270,4 @@ router.post('/save/:collection', async (req, res) => {
 });
 
 module.exports = router;
+module.exports.loadUserData = loadUserData;
