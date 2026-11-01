@@ -7,6 +7,7 @@ Senet-Ödeme işlemlerini senet olarak oluşturabilir.
 Kredi-Ödeme işlemlerini kredi olarak oluşturabilir.
 Taksit-Ödeme işlemlerini taksit olarak oluşturabilir.
 Hafta sonunu algılayıp sonuca göre ödeme tarihi oluşturur.
+Yapay zeka ile analiz yapar sohbet eder
 
 
 
