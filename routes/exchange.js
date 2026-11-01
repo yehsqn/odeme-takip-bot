@@ -17,13 +17,68 @@ const parseNum = (val) => {
   return isNaN(num) ? 0 : num;
 };
 
+// GenelPara altın kodlarının Truncgil karşılıkları (ONS yok: GenelPara da döndürmüyor, Truncgil'de USD cinsinden)
+const TRUNCGIL_GOLD = {
+  GA: 'gram-altin', C: 'ceyrek-altin', Y: 'yarim-altin', T: 'tam-altin', ATA: 'ata-altin',
+  CMR: 'cumhuriyet-altini', RA: 'resat-altin', GR: 'gremse-altin', HA: 'hamit-altin',
+  BSL: 'besli-altin', 22: '22-ayar-bilezik', 18: '18-ayar-altin', 14: '14-ayar-altin', GAG: 'gumus',
+};
+const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
+let truncgilCache = { data: null, at: 0 };
+
+// Truncgil "6.222,90" ve "%-3,56" yazar, GenelPara ise "6222.90" ve "-3.56"
+const truncgilNum = (val) => String(val || '0').replace(/[%$\s]/g, '').replace(/\./g, '').replace(',', '.');
+
+async function fetchTruncgil() {
+  if (truncgilCache.data && Date.now() - truncgilCache.at < 60 * 1000) return truncgilCache.data;
+  const res = await axios.get('https://finans.truncgil.com/today.json', { headers: { 'User-Agent': BROWSER_UA }, timeout: 8000 });
+  truncgilCache = { data: res.data, at: Date.now() };
+  return res.data;
+}
+
+async function truncgilAsGenelPara(list, symbols) {
+  const source = await fetchTruncgil();
+  const pairs = list === 'altin'
+    ? Object.entries(TRUNCGIL_GOLD)
+    : Object.keys(source).filter(k => source[k]?.['Tür'] === 'Döviz').map(k => [k, k]);
+  const wanted = symbols === 'all' ? null : new Set(symbols.split(','));
+  const data = {};
+  for (const [code, key] of pairs) {
+    const item = source[key];
+    if (!item || (wanted && !wanted.has(code))) continue;
+    // GenelPara JPY'yi 100 birim üzerinden verir
+    const scale = code === 'JPY' ? 100 : 1;
+    data[code] = {
+      alis: (parseFloat(truncgilNum(item['Alış'])) * scale).toFixed(4),
+      satis: (parseFloat(truncgilNum(item['Satış'])) * scale).toFixed(4),
+      degisim: truncgilNum(item['Değişim']),
+    };
+  }
+  if (!Object.keys(data).length) throw new Error('Truncgil verisi boş');
+  return { success: true, list, data };
+}
+
+// GenelPara biçiminde kur verisi; GenelPara yanıt vermezse aynı biçimde Truncgil verisi döner
+async function fetchGenelPara(list, symbols, timeout = 8000) {
+  try {
+    const res = await axios.get(`https://api.genelpara.com/json/?list=${list}&sembol=${symbols}`, {
+      headers: { 'User-Agent': BROWSER_UA },
+      timeout,
+    });
+    if (res.data?.data && Object.keys(res.data.data).length) return res.data;
+    throw new Error('boş yanıt');
+  } catch (err) {
+    console.warn(`[EXCHANGE] GenelPara ${list} alınamadı, Truncgil kullanılıyor:`, err.message);
+    return truncgilAsGenelPara(list, symbols);
+  }
+}
+
 async function fetchRates() {
   if (rateCache && Date.now() - cacheTime < CACHE_MS) return rateCache;
 
   try {
-    // Eski embed/para-birimleri.json uç noktası kaldırıldı (404) — JSON API kullanılıyor
-    const res = await axios.get('https://api.genelpara.com/json/?list=doviz&sembol=USD,EUR', { timeout: 8000 });
-    const d = res.data?.data;
+    const res = await fetchGenelPara('doviz', 'USD,EUR');
+    const d = res.data;
     if (!d?.USD) throw new Error('GenelPara döviz verisi alınamadı');
     rateCache = {
       ...rateCache,
@@ -53,15 +108,10 @@ async function fetchAllRates(force = false) {
   try {
     console.log('[EXCHANGE] Fetching ALL rates from GenelPara...');
 
-    const headers = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' };
-
-    const [currencyRes, goldRes] = await Promise.all([
-      axios.get('https://api.genelpara.com/json/?list=doviz&sembol=all', { headers, timeout: 10000 }),
-      axios.get('https://api.genelpara.com/json/?list=altin&sembol=all', { headers, timeout: 10000 })
+    const [currencyData, goldData] = await Promise.all([
+      fetchGenelPara('doviz', 'all', 10000),
+      fetchGenelPara('altin', 'all', 10000)
     ]);
-
-    const currencyData = currencyRes.data;
-    const goldData = goldRes.data;
 
     // Currency mapping
     const currencyMap = {
@@ -185,17 +235,18 @@ router.get('/raw/:source', async (req, res) => {
   if (cached && Date.now() - cached.at < RAW_CACHE_MS) return res.json({ success: true, payload: cached.payload });
 
   try {
-    const upstream = await axios.get(url, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
-      timeout: 10000,
-    });
+    const genelParaList = req.params.source.startsWith('genelpara-') ? req.params.source.slice('genelpara-'.length) : null;
+    const payload = genelParaList
+      ? await fetchGenelPara(genelParaList, symbols, 10000)
+      : (await axios.get(url, { headers: { 'User-Agent': BROWSER_UA }, timeout: 10000 })).data;
     if (rawCache.size >= RAW_CACHE_MAX) rawCache.clear();
-    rawCache.set(url, { at: Date.now(), payload: upstream.data });
-    res.json({ success: true, payload: upstream.data });
+    rawCache.set(url, { at: Date.now(), payload });
+    res.json({ success: true, payload });
   } catch (err) {
     if (cached) return res.json({ success: true, payload: cached.payload });
     console.error(`[EXCHANGE] ${req.params.source} alınamadı:`, err.message);
-    res.status(502).json({ success: false, error: 'Kur verisi alınamadı' });
+    // 502 gönderilmez: Cloudflare gövdeyi kendi hata metniyle değiştiriyor
+    res.status(503).json({ success: false, error: 'Kur verisi alınamadı' });
   }
 });
 
@@ -221,3 +272,4 @@ router.get('/all', async (req, res) => {
 });
 
 module.exports = router;
+module.exports.fetchGenelPara = fetchGenelPara;

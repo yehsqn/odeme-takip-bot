@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const axios = require('axios');
+const { fetchGenelPara } = require('./exchange');
 const { db } = require('../db/turso');
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
@@ -370,11 +371,11 @@ async function handleAnalyze(req, res) {
     let rates = { USD: 38.35, EUR: 41.75, GA: 3100, C: 5050 };
     try {
       const [dovizRes, altinRes] = await Promise.all([
-        axios.get('https://api.genelpara.com/json/?list=doviz&sembol=USD,EUR', { timeout: 3000 }),
-        axios.get('https://api.genelpara.com/json/?list=altin&sembol=GA,C', { timeout: 3000 })
+        fetchGenelPara('doviz', 'USD,EUR', 3000),
+        fetchGenelPara('altin', 'GA,C', 3000)
       ]);
-      const d = dovizRes.data?.data || dovizRes.data;
-      const a = altinRes.data?.data || altinRes.data;
+      const d = dovizRes.data;
+      const a = altinRes.data;
       if (d && d.USD && d.EUR) {
         rates.USD = parseFloat(String(d.USD.satis).replace(',', '.'));
         rates.EUR = parseFloat(String(d.EUR.satis).replace(',', '.'));

@@ -6,6 +6,7 @@ const crypto = require('crypto');
 
 const genId = () => crypto.randomBytes(12).toString('hex');
 const { isPremiumActive } = require('./subscription');
+const { fetchGenelPara } = require('./exchange');
 
 // ── Girdi doğrulama ────────────────────────────────────────────────
 const CATEGORIES = new Set(['gold', 'stock', 'crypto']);
@@ -130,19 +131,18 @@ async function fetchLiveMarketPrices() {
   // 1. GenelPara döviz ve altın çekimi (sembol listesi açıkça belirtilmeli)
   let goldFetched = false;
   try {
-    const headers = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' };
     const [dovizRes, altinRes] = await Promise.all([
-      axios.get('https://api.genelpara.com/json/?list=doviz&sembol=USD,EUR', { headers, timeout: 6000 }),
-      axios.get('https://api.genelpara.com/json/?list=altin&sembol=GA,C,Y,T,ATA,CMR,22,GAG', { headers, timeout: 6000 })
+      fetchGenelPara('doviz', 'USD,EUR', 6000),
+      fetchGenelPara('altin', 'GA,C,Y,T,ATA,CMR,22,GAG', 6000)
     ]);
 
-    if (dovizRes.data?.data?.USD?.satis) {
-      const parsedUsd = parseTRNumber(dovizRes.data.data.USD.satis);
+    if (dovizRes.data?.USD?.satis) {
+      const parsedUsd = parseTRNumber(dovizRes.data.USD.satis);
       if (parsedUsd > 10) usdTry = parsedUsd;
     }
 
-    if (altinRes.data?.data) {
-      const gData = altinRes.data.data;
+    if (altinRes.data) {
+      const gData = altinRes.data;
       const altinMap = {
         'GA': 'GA',
         'C': 'C',
