@@ -12,6 +12,7 @@ const { db } = require('../db/turso');
 
 const SECRET = process.env.SESSION_SECRET
   || crypto.createHash('sha256').update('paypulse-session:' + (process.env.TURSO_AUTH_TOKEN || process.env.TURSO_DATABASE_URL || 'local-dev')).digest('hex');
+console.log(`[SESSION] SESSION_SECRET ${process.env.SESSION_SECRET ? 'tanımlı' : 'TANIMSIZ, türetilmiş anahtar kullanılıyor'}`);
 
 const TOKEN_TTL_SEC = 60 * 60 * 24 * 60; // 60 gün
 
