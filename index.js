@@ -85,9 +85,13 @@ app.use(express.json({ limit: '10mb' }));
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 300,
+  skip: (req) => req.path.startsWith('/exchange/raw/'),
   message: { success: false, error: 'Çok fazla istek gönderildi. Lütfen bir süre sonra tekrar deneyin.' }
 });
 app.use('/api/', limiter);
+
+// Kur panosu dakikada birkaç istek atar ve yanıtlar önbellekten döner: genel sınırı tüketmesin, kendi sınırı olsun
+app.use('/api/exchange/raw/', rateLimit({ windowMs: 15 * 60 * 1000, max: 600, standardHeaders: true, legacyHeaders: false }));
 
 // Giriş ve Şifre rotaları için Katı Rate Limiting (Brute-force / Şifre tahmin saldırılarını engelleme)
 const authLimiter = rateLimit({

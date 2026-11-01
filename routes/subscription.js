@@ -221,6 +221,26 @@ router.post('/sync', async (req, res) => {
   }
 });
 
+// POST /api/subscription/presale-accept — satın almadan hemen önce verilen sözleşme onayını kaydeder
+router.post('/presale-accept', async (req, res) => {
+  try {
+    const { packageId, planTitle, priceText, periodText, formVersion, platform } = req.body || {};
+    const clean = (v) => (typeof v === 'string' ? v.trim().slice(0, 120) : '');
+    if (!clean(planTitle) || !clean(priceText) || !clean(periodText) || !clean(formVersion)) {
+      return res.status(400).json({ success: false, error: 'Onay bilgileri eksik.' });
+    }
+    await db.execute({
+      sql: `INSERT INTO presale_acceptances (id, user_id, package_id, plan_title, price_text, period_text, form_version, platform)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [crypto.randomBytes(12).toString('hex'), req.authUserId, clean(packageId), clean(planTitle), clean(priceText), clean(periodText), clean(formVersion), clean(platform)],
+    });
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[SUBSCRIPTION] Onay kaydı hatası:', err.message);
+    res.status(500).json({ success: false, error: 'Onay kaydedilemedi. Lütfen tekrar dene.' });
+  }
+});
+
 // GET /api/subscription/web-checkout?package=$rc_annual — Masaüstü / web için RevenueCat Web Billing ödeme bağlantısı
 // REVENUECAT_WEB_PURCHASE_URL: RevenueCat → Web → Web Purchase Links → üretim bağlantısı (https://pay.rev.cat/<token>)
 const PACKAGE_IDS = new Set(['$rc_monthly', '$rc_annual']);

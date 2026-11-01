@@ -1282,6 +1282,7 @@ router.post('/delete-account', async (req, res) => {
       { sql: 'DELETE FROM blocked_users WHERE blocker_id = ? OR blocked_id = ?', args: [userId, userId] },
       { sql: 'DELETE FROM user_reports WHERE reporter_id = ? OR reported_user_id = ?', args: [userId, userId] },
       { sql: 'DELETE FROM user_sessions WHERE user_id = ?', args: [userId] },
+      { sql: 'DELETE FROM presale_acceptances WHERE user_id = ?', args: [userId] },
       { sql: 'UPDATE feedbacks SET user_id = NULL, user_email = NULL WHERE user_id = ?', args: [userId] },
       { sql: 'UPDATE app_errors SET user_id = NULL WHERE user_id = ?', args: [userId] },
       { sql: 'DELETE FROM users WHERE id = ?', args: [userId] },

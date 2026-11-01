@@ -191,6 +191,15 @@ async function checkUpcomingPayments(forceAll = false, targetUserId = null) {
   }
 }
 
+/** Hata kayıtlarını ve 90 gündür kullanılmayan oturumları siler (oturum anahtarları zaten 60 günde dolar). */
+async function pruneOldRecords() {
+  const [errors, sessions] = await db.batch([
+    `DELETE FROM app_errors WHERE datetime(created_at) < datetime('now', '-90 days')`,
+    `DELETE FROM user_sessions WHERE datetime(last_active_at) < datetime('now', '-90 days')`,
+  ], 'write');
+  console.log(`[CRON] Eski kayıtlar silindi: ${errors.rowsAffected} hata, ${sessions.rowsAffected} oturum`);
+}
+
 /**
  * Cron zamanlayıcısını başlatır.
  * Her dakika başı çalışır ('* * * * *') ve o anki saate ayarlı kullanıcıların bildirimlerini tetikler.
@@ -206,6 +215,10 @@ function initCron() {
     runEmailBackups().catch(err => console.error('[BACKUP] Gece yedeği hatası:', err.message));
   }, { timezone: 'Europe/Istanbul' });
 
+  cron.schedule('0 4 * * *', () => {
+    pruneOldRecords().catch(err => console.error('[CRON] Kayıt temizliği hatası:', err.message));
+  }, { timezone: 'Europe/Istanbul' });
+
   cron.schedule('* * * * *', async () => {
     await checkUpcomingPayments(false);
   });
@@ -213,4 +226,4 @@ function initCron() {
   console.log('[CRON] Dinamik saatli hatırlatıcı zamanlayıcısı aktif (Her dakika kontrol edilir)');
 }
 
-module.exports = { initCron, checkUpcomingPayments };
+module.exports = { initCron, checkUpcomingPayments, pruneOldRecords };

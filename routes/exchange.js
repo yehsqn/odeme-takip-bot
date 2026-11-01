@@ -159,6 +159,46 @@ async function fetchAllRates(force = false) {
   }
 }
 
+// Uygulama dış kur servislerine doğrudan değil, sunucu üzerinden erişir (kullanıcı IP'si bu servislere gitmez)
+const RAW_SOURCES = new Map([
+  ['genelpara-doviz', (s) => `https://api.genelpara.com/json/?list=doviz&sembol=${s}`],
+  ['genelpara-altin', (s) => `https://api.genelpara.com/json/?list=altin&sembol=${s}`],
+  ['truncgil', () => 'https://finans.truncgil.com/today.json'],
+  ['binance', () => `https://api.binance.com/api/v3/ticker/24hr?symbols=${encodeURIComponent('["BTCUSDT","ETHUSDT","PAXGUSDT"]')}`],
+  ['er-api', () => 'https://open.er-api.com/v6/latest/USD'],
+]);
+const SYMBOLS_RE = /^[A-Za-z0-9,-]{1,200}$/;
+const RAW_CACHE_MS = 60 * 1000;
+const RAW_CACHE_MAX = 50;
+const rawCache = new Map();
+
+// GET /api/exchange/raw/:source?sembol=USD,EUR — izin verilen kaynağın yanıtını olduğu gibi döndürür
+router.get('/raw/:source', async (req, res) => {
+  const buildUrl = RAW_SOURCES.get(req.params.source);
+  const symbols = String(req.query.sembol || '');
+  if (!buildUrl || (req.params.source.startsWith('genelpara') && !SYMBOLS_RE.test(symbols))) {
+    return res.status(400).json({ success: false, error: 'Geçersiz kaynak' });
+  }
+
+  const url = buildUrl(symbols);
+  const cached = rawCache.get(url);
+  if (cached && Date.now() - cached.at < RAW_CACHE_MS) return res.json({ success: true, payload: cached.payload });
+
+  try {
+    const upstream = await axios.get(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+      timeout: 10000,
+    });
+    if (rawCache.size >= RAW_CACHE_MAX) rawCache.clear();
+    rawCache.set(url, { at: Date.now(), payload: upstream.data });
+    res.json({ success: true, payload: upstream.data });
+  } catch (err) {
+    if (cached) return res.json({ success: true, payload: cached.payload });
+    console.error(`[EXCHANGE] ${req.params.source} alınamadı:`, err.message);
+    res.status(502).json({ success: false, error: 'Kur verisi alınamadı' });
+  }
+});
+
 // GET /api/exchange/rates
 router.get('/rates', async (req, res) => {
   try {

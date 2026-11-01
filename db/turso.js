@@ -190,6 +190,20 @@ function initDb() {
       created_at TEXT DEFAULT (datetime('now'))
     )`,
 
+    // Satın alma öncesi ön bilgilendirme ve mesafeli satış sözleşmesi onayları
+    `CREATE TABLE IF NOT EXISTS presale_acceptances (
+      id           TEXT PRIMARY KEY,
+      user_id      TEXT NOT NULL,
+      package_id   TEXT,
+      plan_title   TEXT NOT NULL,
+      price_text   TEXT NOT NULL,
+      period_text  TEXT NOT NULL,
+      form_version TEXT NOT NULL,
+      platform     TEXT,
+      accepted_at  TEXT DEFAULT (datetime('now'))
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_presale_user ON presale_acceptances(user_id)`,
+
     // ── Oturum ve Cihaz Listesi (Uzaktan Çıkış) ───────────────
     `CREATE TABLE IF NOT EXISTS user_sessions (
       id             TEXT PRIMARY KEY,
