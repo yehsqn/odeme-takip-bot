@@ -189,6 +189,46 @@ function initDb() {
       last_week  TEXT,
       created_at TEXT DEFAULT (datetime('now'))
     )`,
+    // Uygulama kapalıyken bildirim için telefon anahtarları
+    `CREATE TABLE IF NOT EXISTS device_tokens (
+      token      TEXT PRIMARY KEY,
+      user_id    TEXT NOT NULL,
+      updated_at TEXT DEFAULT (datetime('now'))
+    )`,
+    // Arkadaş daveti
+    `CREATE TABLE IF NOT EXISTS referral_codes (
+      user_id TEXT PRIMARY KEY,
+      code    TEXT NOT NULL UNIQUE
+    )`,
+    `CREATE TABLE IF NOT EXISTS referrals (
+      invitee_id TEXT PRIMARY KEY,
+      inviter_id TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now'))
+    )`,
+    // Ücretsiz plan yapay zekâ kullanım sayacı
+    `CREATE TABLE IF NOT EXISTS ai_usage (
+      user_id TEXT NOT NULL,
+      feature TEXT NOT NULL,
+      period  TEXT NOT NULL,
+      count   INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (user_id, feature, period)
+    )`,
+    // Satın alma hunisi olayları (90 gün saklanır)
+    `CREATE TABLE IF NOT EXISTS app_events (
+      id         TEXT PRIMARY KEY,
+      user_id    TEXT NOT NULL,
+      name       TEXT NOT NULL,
+      detail     TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    )`,
+    // PulseCity arkadaş tebrikleri: arkadaş başına günde bir
+    `CREATE TABLE IF NOT EXISTS game_cheers (
+      sender_id   TEXT NOT NULL,
+      receiver_id TEXT NOT NULL,
+      day         INTEGER NOT NULL,
+      created_at  TEXT DEFAULT (datetime('now')),
+      PRIMARY KEY (sender_id, receiver_id, day)
+    )`,
 
     // Satın alma öncesi ön bilgilendirme ve mesafeli satış sözleşmesi onayları
     `CREATE TABLE IF NOT EXISTS presale_acceptances (
@@ -203,6 +243,22 @@ function initDb() {
       accepted_at  TEXT DEFAULT (datetime('now'))
     )`,
     `CREATE INDEX IF NOT EXISTS idx_presale_user ON presale_acceptances(user_id)`,
+    // Satın alma sonrası tüketiciye e-postayla gönderilen sözleşme kopyaları (Abonelik Sözleşmeleri Yönetmeliği md. 5)
+    `CREATE TABLE IF NOT EXISTS contract_deliveries (
+      id              TEXT PRIMARY KEY,
+      user_id         TEXT NOT NULL,
+      acceptance_id   TEXT NOT NULL UNIQUE,
+      product_id      TEXT,
+      purchased_at    TEXT,
+      status          TEXT NOT NULL DEFAULT 'pending',
+      attempts        INTEGER NOT NULL DEFAULT 0,
+      last_error      TEXT,
+      next_attempt_at TEXT,
+      sent_at         TEXT,
+      last_resend_at  TEXT,
+      created_at      TEXT DEFAULT (datetime('now'))
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_contract_user ON contract_deliveries(user_id)`,
 
     // ── Oturum ve Cihaz Listesi (Uzaktan Çıkış) ───────────────
     `CREATE TABLE IF NOT EXISTS user_sessions (
@@ -385,8 +441,10 @@ function initDb() {
     { table: 'users', name: 'kvkk_accepted_at', def: 'TEXT' },
     { table: 'users', name: 'kvkk_version', def: 'TEXT' },
     { table: 'users', name: 'abroad_consent_at', def: 'TEXT' },
+    { table: 'users', name: 'age_confirmed_at', def: 'TEXT' }, // "18 yaşından büyüğüm" beyanı
     { table: 'users', name: 'email_updates_consent', def: 'INTEGER DEFAULT 0' },
     { table: 'users', name: 'email_consent_at', def: 'TEXT' },
+    { table: 'users', name: 'trial_reminded_at', def: 'TEXT' },
   ];
 
   // Migration: Tablo şemalarını tek seferde paralel kontrol et (24 ardışık HTTP turu yerine 1 paralel kontrol)

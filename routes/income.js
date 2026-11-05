@@ -1,4 +1,5 @@
 const express = require('express');
+const { serverError } = require('../middleware/serverError');
 const router = express.Router();
 const { ensureSelfParam } = require('../middleware/session');
 
@@ -31,7 +32,7 @@ router.get('/:userId', async (req, res) => {
     }));
     res.json({ success: true, records });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -79,7 +80,7 @@ router.put('/:userId/:date', async (req, res) => {
       }
     });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    serverError(res, err);
   }
 });
 

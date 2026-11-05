@@ -59,6 +59,7 @@ async function sendToUser(userId, payload) {
     }
   } else {
     console.log(`[WS] Kullanıcı çevrimdışı, bildirim DB'ye kaydedildi → ${userId}`);
+    require('./push').sendPush(userId, payload).catch(err => console.error('[PUSH] Gönderim hatası:', err.message));
   }
 }
 

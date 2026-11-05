@@ -43,10 +43,13 @@ function itemFields(body, partial = false) {
   return out;
 }
 
-async function requirePremium(req, res) {
+const FREE_ITEMS = 2;
+
+async function canAddItem(req, res, cnt) {
+  if (cnt < FREE_ITEMS) return true;
   const u = (await db.execute({ sql: 'SELECT * FROM users WHERE id = ?', args: [req.authUserId] })).rows[0];
   if (isPremiumActive(u)) return true;
-  res.status(403).json({ success: false, premiumRequired: true, error: 'Portföy takibi Premium özelliğidir.' });
+  res.status(403).json({ success: false, premiumRequired: true, error: `Ücretsiz planda en fazla ${FREE_ITEMS} varlık eklenebilir.` });
   return false;
 }
 
@@ -526,16 +529,16 @@ router.get('/', async (req, res) => {
   }
 });
 
-// POST /api/portfolio — Yeni varlık ekle (Premium)
+// POST /api/portfolio — Yeni varlık ekle (ücretsiz planda sınırlı)
 router.post('/', async (req, res) => {
   try {
     const userId = req.authUserId;
-    if (!(await requirePremium(req, res))) return;
     const f = itemFields(req.body || {});
     if (f.error) return res.status(400).json({ success: false, error: f.error });
 
     const cnt = Number((await db.execute({ sql: 'SELECT COUNT(*) AS cnt FROM portfolio_items WHERE user_id = ?', args: [userId] })).rows[0]?.cnt || 0);
     if (cnt >= MAX_ITEMS) return res.status(400).json({ success: false, error: `En fazla ${MAX_ITEMS} varlık ekleyebilirsiniz.` });
+    if (!(await canAddItem(req, res, cnt))) return;
 
     const id = genId();
     await db.execute({
@@ -555,7 +558,6 @@ router.post('/', async (req, res) => {
 router.put('/:id', async (req, res) => {
   try {
     const userId = req.authUserId;
-    if (!(await requirePremium(req, res))) return;
     const body = { ...(req.body || {}) };
     delete body.category; delete body.symbol; // kategori ve sembol sonradan değiştirilmez
     const f = itemFields(body, true);

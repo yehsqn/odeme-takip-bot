@@ -1,10 +1,12 @@
 const express = require('express');
+const { serverError } = require('../middleware/serverError');
 const router = express.Router();
 const { db } = require('../db/turso');
 const crypto = require('crypto');
 const axios = require('axios');
 const { ensureSelfParam, requireAdmin } = require('../middleware/session');
 const { sendWsEvent } = require('../websocket');
+const { queueContract, attemptDelivery, renderFor } = require('../contracts');
 
 router.param('userId', ensureSelfParam);
 
@@ -148,7 +150,7 @@ router.get('/status/:userId', async (req, res) => {
       }
     });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -198,7 +200,7 @@ router.post('/start-trial', async (req, res) => {
       message: '🎁 3 Günlük Ücretsiz PayPulse PRO Denemeniz Başladı!'
     });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -262,20 +264,51 @@ router.get('/web-checkout', async (req, res) => {
   }
 });
 
-// POST /api/subscription/cancel
-router.post('/cancel', async (req, res) => {
+// GET /api/subscription/contracts — kullanıcının sözleşme kopyaları ve e-posta durumu
+router.get('/contracts', async (req, res) => {
   try {
-    const { userId } = req.body;
-    if (!userId) return res.status(400).json({ success: false, error: 'userId gerekli' });
-
-    await db.execute({
-      sql: "UPDATE users SET subscription_status = 'canceled' WHERE id = ?",
-      args: [userId]
-    });
-
-    res.json({ success: true, message: 'Abonelik iptal edildi. Süre sonuna kadar kullanılabilir.' });
+    const rows = (await db.execute({
+      sql: `SELECT c.id, c.status, c.sent_at, c.purchased_at, p.plan_title, p.price_text
+            FROM contract_deliveries c LEFT JOIN presale_acceptances p ON p.id = c.acceptance_id
+            WHERE c.user_id = ? ORDER BY c.created_at DESC LIMIT 20`,
+      args: [req.authUserId],
+    })).rows;
+    res.json({ success: true, contracts: rows.map(r => ({ id: r.id, status: r.status, sentAt: r.sent_at, purchasedAt: r.purchased_at, planTitle: r.plan_title, priceText: r.price_text })) });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    serverError(res, err);
+  }
+});
+
+const ownContract = async (req) => (await db.execute({
+  sql: 'SELECT * FROM contract_deliveries WHERE id = ? AND user_id = ?', args: [String(req.params.id), req.authUserId],
+})).rows[0];
+
+// GET /api/subscription/contracts/:id — sözleşme metni (uygulamada görüntüleme / indirme)
+router.get('/contracts/:id', async (req, res) => {
+  try {
+    const row = await ownContract(req);
+    if (!row) return res.status(404).json({ success: false, error: 'Sözleşme bulunamadı.' });
+    const doc = await renderFor(row);
+    if (!doc) return res.status(404).json({ success: false, error: 'Sözleşme bulunamadı.' });
+    res.json({ success: true, html: doc.html });
+  } catch (err) {
+    serverError(res, err);
+  }
+});
+
+// POST /api/subscription/contracts/:id/resend — kopyayı e-postayla yeniden gönderir (5 dakikada bir)
+router.post('/contracts/:id/resend', async (req, res) => {
+  try {
+    const row = await ownContract(req);
+    if (!row) return res.status(404).json({ success: false, error: 'Sözleşme bulunamadı.' });
+    if (row.last_resend_at && Date.now() - new Date(row.last_resend_at + 'Z').getTime() < 5 * 60 * 1000) {
+      return res.status(429).json({ success: false, error: 'Birkaç dakika sonra tekrar dene.' });
+    }
+    await db.execute({ sql: "UPDATE contract_deliveries SET status = 'pending', attempts = 0, next_attempt_at = NULL, last_resend_at = datetime('now') WHERE id = ?", args: [row.id] });
+    const status = await attemptDelivery(row.id);
+    res.json({ success: status === 'sent', status, error: status === 'sent' ? undefined : 'E-posta şu an gönderilemedi; otomatik olarak tekrar denenecek. Sözleşmeyi uygulamada görüntüleyebilirsin.' });
+  } catch (err) {
+    serverError(res, err);
   }
 });
 
@@ -317,7 +350,7 @@ router.post('/consume-ai-token', async (req, res) => {
 
     res.json({ success: true, remaining: 0, firstUse: true });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -383,7 +416,7 @@ router.post('/admin/grant-premium', requireAdmin, async (req, res) => {
       expiry: expiry.toISOString()
     });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -426,7 +459,7 @@ router.post('/admin/revoke-premium', requireAdmin, async (req, res) => {
 
     res.json({ success: true, message: `${targetEmail} kullanıcısının premium üyeliği iptal edildi.` });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -474,7 +507,7 @@ router.get('/admin/users', requireAdmin, async (req, res) => {
 
     res.json({ success: true, users });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -532,6 +565,11 @@ router.post('/webhook', express.json({ type: '*/*' }), async (req, res) => {
           return res.status(502).json({ success: false });
         }
         sendWsEvent(userId, { type: 'SUBSCRIPTION_UPDATED' });
+        if (eventType === 'INITIAL_PURCHASE') {
+          // Sözleşme kopyası: hata webhook yanıtını etkilemez, zamanlayıcı tekrar dener
+          queueContract(userId, { productId: ev.product_id, purchasedAtMs: ev.purchased_at_ms })
+            .catch(err => console.error('[CONTRACT] Kuyruk hatası:', err.message));
+        }
       } catch (dbErr) {
         console.error('[WEBHOOK] DB hatası:', dbErr.message);
         return res.status(500).json({ success: false });

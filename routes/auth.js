@@ -1,4 +1,5 @@
 const express = require('express');
+const { serverError } = require('../middleware/serverError');
 const router = express.Router();
 const { db } = require('../db/turso');
 const { OAuth2Client } = require('google-auth-library');
@@ -188,17 +189,26 @@ async function sendSession(res, row, extra = {}, req = null) {
 }
 
 // KVKK aydınlatma metni sürümü: metin değişince artırılır, kullanıcılardan yeniden onay istenir
+// Kabul edilen en eski aydınlatma metni sürümü: bunun altındaki onaylar yeniden istenir.
+// Yeni metin yayınlanınca uygulama sürümü yaygınlaşana kadar burası eski kalır; aksi halde eski uygulamalar
+// eski metni gösterip yeni sürüm numarasıyla onay kaydeder.
 const KVKK_VERSION = '2026-10-28';
+// Uygulamaların gösterebildiği metin sürümleri: onay, istemcinin gerçekten gösterdiği sürümle kaydedilir
+const KNOWN_KVKK_VERSIONS = ['2026-10-28', '2026-11-01', '2026-11-05'];
 const nowIso = () => new Date().toISOString();
 
 /** Kayıt / ilk girişte verilen KVKK onayı ve isteğe bağlı duyuru e-postası izni */
-async function saveConsents(userId, { kvkkAccepted, abroadConsent, emailUpdates }) {
+async function saveConsents(userId, { kvkkAccepted, abroadConsent, ageConfirmed, kvkkVersion, emailUpdates }) {
   const at = nowIso();
   if (kvkkAccepted === true) {
-    await db.execute({ sql: 'UPDATE users SET kvkk_accepted_at = ?, kvkk_version = ? WHERE id = ?', args: [at, KVKK_VERSION, userId] });
+    await db.execute({ sql: 'UPDATE users SET kvkk_accepted_at = ?, kvkk_version = ? WHERE id = ?', args: [at, KNOWN_KVKK_VERSIONS.includes(kvkkVersion) ? kvkkVersion : KVKK_VERSION, userId] });
   }
   if (abroadConsent === true) {
     await db.execute({ sql: 'UPDATE users SET abroad_consent_at = ? WHERE id = ?', args: [at, userId] });
+  }
+  // Eski sürümler bu alanı göndermez; zorunlu tutulmadı, yeni sürüm onay kutusunu zorunlu kılar
+  if (ageConfirmed === true) {
+    await db.execute({ sql: 'UPDATE users SET age_confirmed_at = ? WHERE id = ?', args: [at, userId] });
   }
   if (typeof emailUpdates === 'boolean') {
     await db.execute({ sql: 'UPDATE users SET email_updates_consent = ?, email_consent_at = ? WHERE id = ?', args: [emailUpdates ? 1 : 0, at, userId] });
@@ -239,7 +249,9 @@ function formatUser(row) {
     avatar: row.avatar || '',
     friendCode,
     // KVKK: güncel aydınlatma metni onaylanmış ve yurt dışı aktarım rızası verilmiş mi
-    consentRequired: !(row.kvkk_accepted_at && row.kvkk_version === KVKK_VERSION && row.abroad_consent_at),
+    consentRequired: !(row.kvkk_accepted_at && row.kvkk_version && row.kvkk_version >= KVKK_VERSION && row.abroad_consent_at),
+    kvkkVersion: row.kvkk_version || null,
+    ageConfirmed: !!row.age_confirmed_at,
     emailUpdatesConsent: Number(row.email_updates_consent) === 1,
     isBanned: Number(row.is_banned) === 1 && !(row.banned_until && Date.parse(row.banned_until) <= Date.now()),
     banReason: row.ban_reason || null,
@@ -319,6 +331,8 @@ router.post('/register', async (req, res) => {
       companyName,
       kvkkAccepted,
       abroadConsent,
+      ageConfirmed,
+      kvkkVersion,
       emailUpdates,
     } = req.body;
 
@@ -360,8 +374,8 @@ router.post('/register', async (req, res) => {
     // Kullanıcı oluştur (Yeni kayıtlara otomatik 3 günlük PRO Deneme tanımla)
     const trialExpiry = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString();
     await db.execute({
-      sql: `INSERT INTO users (id, email, password, customer_type, display_name, email_verified, is_premium, subscription_type, subscription_plan, subscription_status, subscription_expiry, premium_expires_at, ai_analysis_tokens)
-            VALUES (?, ?, ?, ?, ?, 0, 1, 'trial', 'trial', 'active', ?, ?, 999)`,
+      sql: `INSERT INTO users (id, email, password, customer_type, display_name, email_verified, is_premium, subscription_type, subscription_plan, subscription_status, subscription_expiry, premium_expires_at, ai_analysis_tokens, email_backup_enabled)
+            VALUES (?, ?, ?, ?, ?, 0, 1, 'trial', 'trial', 'active', ?, ?, 999, 0)`,
       args: [id, email.toLowerCase().trim(), hashedPassword, customerType, displayName, trialExpiry, trialExpiry]
     });
 
@@ -383,7 +397,7 @@ router.post('/register', async (req, res) => {
       });
     }
 
-    await saveConsents(id, { kvkkAccepted, abroadConsent, emailUpdates: emailUpdates === true });
+    await saveConsents(id, { kvkkAccepted, abroadConsent, ageConfirmed, kvkkVersion, emailUpdates: emailUpdates === true });
 
     // Yeni oluşturulan kullanıcıyı getir ve formatla
     const emailSent = await issueVerificationCode(id, email.toLowerCase().trim());
@@ -406,7 +420,7 @@ router.get('/user/:id', async (req, res) => {
 
     res.json({ success: true, user: formatUser(user) });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -420,7 +434,7 @@ router.put('/language', async (req, res) => {
     });
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -437,7 +451,7 @@ router.get('/premium/:id', async (req, res) => {
     const isActive = user.is_premium && (!user.premium_expires_at || new Date(user.premium_expires_at) > new Date());
     res.json({ success: true, isPremium: !!isActive, plan: isActive ? user.subscription_plan : 'free' });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -483,7 +497,7 @@ function getAllowedGoogleAudiences() {
 // POST /api/auth/google
 router.post('/google', async (req, res) => {
   try {
-    const { credential, accessToken, kvkkAccepted, abroadConsent, emailUpdates } = req.body;
+    const { credential, accessToken, kvkkAccepted, abroadConsent, ageConfirmed, kvkkVersion, emailUpdates } = req.body;
     if (!credential && !accessToken) return res.status(400).json({ success: false, error: 'Google token gerekli' });
 
     const validAudiences = getAllowedGoogleAudiences();
@@ -546,8 +560,8 @@ router.post('/google', async (req, res) => {
       const id = genId();
       const trialExpiry = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString();
       await db.execute({
-        sql: `INSERT INTO users (id, email, password, google_id, display_name, avatar, customer_type, is_premium, subscription_type, subscription_plan, subscription_status, subscription_expiry, premium_expires_at, ai_analysis_tokens)
-              VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'trial', 'trial', 'active', ?, ?, 999)`,
+        sql: `INSERT INTO users (id, email, password, google_id, display_name, avatar, customer_type, is_premium, subscription_type, subscription_plan, subscription_status, subscription_expiry, premium_expires_at, ai_analysis_tokens, email_backup_enabled)
+              VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'trial', 'trial', 'active', ?, ?, 999, 0)`,
         args: [id, email, 'google_oauth_' + crypto.randomBytes(16).toString('hex'), payload.sub, payload.name || '', payload.picture || '', CUSTOMER_TYPE.INDIVIDUAL, trialExpiry, trialExpiry]
       });
 
@@ -565,7 +579,7 @@ router.post('/google', async (req, res) => {
       }
 
       if (kvkkAccepted === true && abroadConsent === true) {
-        await saveConsents(id, { kvkkAccepted, abroadConsent, emailUpdates: emailUpdates === true });
+        await saveConsents(id, { kvkkAccepted, abroadConsent, ageConfirmed, kvkkVersion, emailUpdates: emailUpdates === true });
       }
       result = await db.execute({ sql: 'SELECT * FROM users WHERE id = ?', args: [id] });
       user = result.rows[0];
@@ -618,11 +632,11 @@ router.post('/google', async (req, res) => {
 // POST /api/auth/consent — KVKK aydınlatma onayı + yurt dışı aktarım rızası (Google ile girenler, metin güncellenince)
 router.post('/consent', async (req, res) => {
   try {
-    const { kvkkAccepted, abroadConsent, emailUpdates } = req.body || {};
+    const { kvkkAccepted, abroadConsent, ageConfirmed, kvkkVersion, emailUpdates } = req.body || {};
     if (kvkkAccepted !== true || abroadConsent !== true) {
       return res.status(400).json({ success: false, error: 'Devam etmek için aydınlatma metnini onaylaman gerekir.' });
     }
-    await saveConsents(req.authUserId, { kvkkAccepted, abroadConsent, emailUpdates: typeof emailUpdates === 'boolean' ? emailUpdates : undefined });
+    await saveConsents(req.authUserId, { kvkkAccepted, abroadConsent, ageConfirmed, kvkkVersion, emailUpdates: typeof emailUpdates === 'boolean' ? emailUpdates : undefined });
     const row = (await db.execute({ sql: 'SELECT * FROM users WHERE id = ?', args: [req.authUserId] })).rows[0];
     res.json({ success: true, user: formatUser(row) });
   } catch (err) {
@@ -697,7 +711,7 @@ router.post('/set-pin', async (req, res) => {
     await db.execute({ sql: 'UPDATE users SET pin = ? WHERE id = ?', args: [pinHash, userId] });
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -727,7 +741,7 @@ router.post('/verify-pin', async (req, res) => {
       user: formatUser(user),
     });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -749,7 +763,7 @@ router.post('/set-income-password', async (req, res) => {
     });
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -769,7 +783,7 @@ router.post('/verify-income-password', async (req, res) => {
     }
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -819,7 +833,7 @@ router.put('/customer-type', async (req, res) => {
     const result = await db.execute({ sql: 'SELECT * FROM users WHERE id = ?', args: [userId] });
     res.json({ success: true, user: formatUser(result.rows[0]) });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -852,7 +866,7 @@ router.put('/profile', async (req, res) => {
     const updatedResult = await db.execute({ sql: 'SELECT * FROM users WHERE id = ?', args: [userId] });
     res.json({ success: true, user: formatUser(updatedResult.rows[0]) });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -1277,12 +1291,19 @@ router.post('/delete-account', async (req, res) => {
       { sql: 'DELETE FROM user_notes WHERE user_id = ?', args: [userId] },
       { sql: 'DELETE FROM ai_reports WHERE user_id = ?', args: [userId] },
       { sql: 'DELETE FROM game_profiles WHERE user_id = ?', args: [userId] },
+      { sql: 'DELETE FROM ai_usage WHERE user_id = ?', args: [userId] },
+      { sql: 'DELETE FROM device_tokens WHERE user_id = ?', args: [userId] },
+      { sql: 'DELETE FROM referral_codes WHERE user_id = ?', args: [userId] },
+      { sql: 'DELETE FROM referrals WHERE invitee_id = ? OR inviter_id = ?', args: [userId, userId] },
+      { sql: 'DELETE FROM app_events WHERE user_id = ?', args: [userId] },
+      { sql: 'DELETE FROM game_cheers WHERE sender_id = ? OR receiver_id = ?', args: [userId, userId] },
       { sql: 'DELETE FROM messages WHERE sender_id = ? OR receiver_id = ?', args: [userId, userId] },
       { sql: 'DELETE FROM friendships WHERE requester_id = ? OR recipient_id = ?', args: [userId, userId] },
       { sql: 'DELETE FROM blocked_users WHERE blocker_id = ? OR blocked_id = ?', args: [userId, userId] },
       { sql: 'DELETE FROM user_reports WHERE reporter_id = ? OR reported_user_id = ?', args: [userId, userId] },
       { sql: 'DELETE FROM user_sessions WHERE user_id = ?', args: [userId] },
       { sql: 'DELETE FROM presale_acceptances WHERE user_id = ?', args: [userId] },
+      { sql: 'DELETE FROM contract_deliveries WHERE user_id = ?', args: [userId] },
       { sql: 'UPDATE feedbacks SET user_id = NULL, user_email = NULL WHERE user_id = ?', args: [userId] },
       { sql: 'UPDATE app_errors SET user_id = NULL WHERE user_id = ?', args: [userId] },
       { sql: 'DELETE FROM users WHERE id = ?', args: [userId] },

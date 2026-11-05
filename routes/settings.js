@@ -1,4 +1,5 @@
 const express = require('express');
+const { serverError } = require('../middleware/serverError');
 const router = express.Router();
 const { ensureSelfParam } = require('../middleware/session');
 
@@ -62,7 +63,7 @@ router.get('/:userId', async (req, res) => {
 
     res.json({ success: true, settings: formatSettings(settings) });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -105,7 +106,7 @@ router.put('/:userId', async (req, res) => {
     const result = await db.execute({ sql: 'SELECT * FROM settings WHERE user_id = ?', args: [userId] });
     res.json({ success: true, settings: formatSettings(result.rows[0]) });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    serverError(res, err);
   }
 });
 

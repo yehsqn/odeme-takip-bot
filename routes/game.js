@@ -1,8 +1,10 @@
 const express = require('express');
 const router = express.Router();
 const { db } = require('../db/turso');
-const { computePulse, LEAGUES } = require('../game/pulseScore');
+const { computePulse, stageFor, LEAGUES } = require('../game/pulseScore');
 const { parsePlan } = require('../game/stamp');
+const { sendToUser } = require('../websocket');
+const { areFriends, isBlockedEitherWay, publicName } = require('./social');
 
 // Puanlar sunucudaki kayıtlardan hesaplanır (istemcinin gönderdiği puana güvenilmez)
 const cache = new Map(); // userId → { at, data }
@@ -121,6 +123,85 @@ router.get('/leaderboard', async (req, res) => {
     res.json({ success: true, league: LEAGUES[league] || LEAGUES[0], leagueRows, overall, joined: !!(me && me.opt_in) });
   } catch (err) {
     res.status(500).json({ success: false, error: 'Sıralama alınamadı' });
+  }
+});
+
+// ── Arkadaş şehri ───────────────────────────────────────────────
+const CITY_BUILDINGS = new Set(['house', 'garden', 'market', 'park', 'bank', 'school', 'skyscraper', 'stadium', 'tower']);
+const CITY_SLOT = /^[0-3]-[0-3]$/;
+const trDayNumber = () => Math.floor((Date.now() + 3 * 3600000) / 86400000);
+
+const readExtras = async (userId) => {
+  const r = await db.execute({ sql: 'SELECT extras FROM settings WHERE user_id = ?', args: [userId] });
+  try { return JSON.parse(r.rows[0]?.extras || '{}') || {}; } catch { return {}; }
+};
+
+// extras istemciden gelir: yalnızca bilinen parsel ve binalar dışarı verilir
+const safeLayout = (layout) => Object.fromEntries(
+  Object.entries(layout && typeof layout === 'object' ? layout : {})
+    .filter(([slot, type]) => CITY_SLOT.test(slot) && CITY_BUILDINGS.has(type))
+);
+
+// Yalnızca kabul edilmiş, engellenmemiş arkadaşlar (sebep yanıttan anlaşılmaz)
+async function requireFriend(req, res, next) {
+  try {
+    const friendId = String(req.params.friendId);
+    if (friendId === req.authUserId
+      || await isBlockedEitherWay(req.authUserId, friendId)
+      || !(await areFriends(req.authUserId, friendId))) {
+      return res.status(403).json({ success: false, error: 'Yalnızca arkadaşlarının şehrini ziyaret edebilirsin.' });
+    }
+    req.friendId = friendId;
+    next();
+  } catch (err) {
+    res.status(500).json({ success: false, error: 'Arkadaş bilgisi alınamadı' });
+  }
+}
+
+// GET /api/game/friends/:friendId/city — yalnızca aşama adı ve yerleşim (puan, tutar, borç asla)
+router.get('/friends/:friendId/city', requireFriend, async (req, res) => {
+  try {
+    const extras = await readExtras(req.friendId);
+    if (extras.pulseCityHidden) return res.json({ success: true, hidden: true });
+
+    const [score, cheer] = await Promise.all([
+      scoreFor(req.friendId),
+      db.execute({
+        sql: 'SELECT 1 FROM game_cheers WHERE sender_id = ? AND receiver_id = ? AND day = ?',
+        args: [req.authUserId, req.friendId, trDayNumber()],
+      }),
+    ]);
+    const earned = score.total + (Number(extras.pulseBonusPoints) || 0);
+    res.json({
+      success: true,
+      hidden: false,
+      stage: stageFor(earned).stage.name,
+      layout: safeLayout(extras.pulseCityLayout),
+      cheeredToday: cheer.rows.length > 0,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: 'Arkadaşın şehri alınamadı' });
+  }
+});
+
+// POST /api/game/friends/:friendId/cheer — arkadaş başına günde bir tebrik, karşı tarafa bildirim gider
+router.post('/friends/:friendId/cheer', requireFriend, async (req, res) => {
+  try {
+    const result = await db.execute({
+      sql: 'INSERT OR IGNORE INTO game_cheers (sender_id, receiver_id, day) VALUES (?, ?, ?)',
+      args: [req.authUserId, req.friendId, trDayNumber()],
+    });
+    if (result.rowsAffected > 0) {
+      const sender = (await db.execute({ sql: 'SELECT display_name FROM users WHERE id = ?', args: [req.authUserId] })).rows[0];
+      sendToUser(req.friendId, {
+        type: 'CITY_CHEER',
+        title: '🏙️ Şehrin tebrik edildi',
+        body: `${publicName(sender)} PulseCity şehrini ziyaret etti ve seni tebrik etti.`,
+      }).catch(() => {});
+    }
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, error: 'Tebrik gönderilemedi' });
   }
 });
 

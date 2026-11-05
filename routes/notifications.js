@@ -1,4 +1,5 @@
 const express = require('express');
+const { serverError } = require('../middleware/serverError');
 const router = express.Router();
 const { ensureSelfParam } = require('../middleware/session');
 
@@ -34,7 +35,7 @@ router.get('/:userId', async (req, res) => {
     const unreadCount = notifications.filter((n) => !n.isRead).length;
     res.json({ success: true, notifications, unreadCount });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -47,7 +48,7 @@ router.get('/:userId/unread-count', async (req, res) => {
     });
     res.json({ success: true, count: Number(result.rows[0]?.cnt || 0) });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -60,7 +61,7 @@ router.put('/:id/read', async (req, res) => {
     });
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -73,7 +74,7 @@ router.put('/:userId/read-all', async (req, res) => {
     });
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -86,7 +87,7 @@ router.delete('/:userId', async (req, res) => {
     });
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -105,7 +106,7 @@ router.post('/test-push', async (req, res) => {
 
     res.json({ success: true, message: 'Test bildirimi gönderildi.' });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -117,7 +118,7 @@ router.post('/trigger-reminders', async (req, res) => {
     const result = await checkUpcomingPayments(true, req.authUserId);
     res.json({ success: true, ...result, message: 'Hatırlatıcı kontrolü tamamlandı.' });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    serverError(res, err);
   }
 });
 

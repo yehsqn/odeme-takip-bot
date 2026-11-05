@@ -1,4 +1,5 @@
 const express = require('express');
+const { serverError } = require('../middleware/serverError');
 const router = express.Router();
 // Gelir-gider satırında sütunu olmayan, saklanmasına izin verilen alanlar
 const INCOME_EXTRA_FIELDS = {
@@ -17,6 +18,7 @@ const pickIncomeExtra = (data) => {
 };
 const { stampPayments } = require('../game/stamp');
 const { ensureSelfParam } = require('../middleware/session');
+const { FREE_PAYMENTS, userIsPremium } = require('../middleware/plan');
 
 // Yoldaki :userId oturum sahibi olmalı (başkasının verisine erişimi engeller)
 router.param('userId', ensureSelfParam);
@@ -103,7 +105,7 @@ router.get('/load/:userId', async (req, res) => {
     const data = await loadUserData(req.params.userId);
     res.json({ success: true, ...data, banks: data.settings?.banks || [] });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -129,6 +131,12 @@ router.post('/save/payments', async (req, res) => {
     const existing = await db.execute({ sql: 'SELECT payment_id, created_at, installment_plan FROM payments WHERE user_id = ?', args: [userId] });
     const uniquePayments = stampPayments(Array.from(uniqueMap.values()), existing.rows);
 
+    // Ücretsiz sınır yalnızca yeni kaydı durdurur: sınırın üstündeki eski kayıtlar ve yedekten geri yükleme etkilenmez
+    if (req.body.restore !== true && uniquePayments.length > FREE_PAYMENTS && uniquePayments.length > existing.rows.length
+      && !(await userIsPremium(userId))) {
+      return res.status(403).json({ success: false, premiumRequired: true, code: 'PAYMENT_LIMIT', error: `Ücretsiz planda en fazla ${FREE_PAYMENTS} ödeme eklenebilir.` });
+    }
+
     // Bundle DELETE and INSERT into a single batch transaction to prevent race conditions
     const stmts = [
       { sql: 'DELETE FROM payments WHERE user_id = ?', args: [userId] }
@@ -153,7 +161,7 @@ router.post('/save/payments', async (req, res) => {
 
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -196,7 +204,7 @@ router.post('/save/settings', async (req, res) => {
 
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -237,7 +245,7 @@ router.post('/save/daily-incomes', async (req, res) => {
 
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -265,7 +273,7 @@ router.post('/save/:collection', async (req, res) => {
     // Generic: not implemented for other collections yet
     res.json({ success: true, message: `${collection} received (no-op for mobile)` });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    serverError(res, err);
   }
 });
 

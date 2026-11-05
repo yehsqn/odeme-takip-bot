@@ -1,4 +1,5 @@
 const express = require('express');
+const { serverError } = require('../middleware/serverError');
 const router = express.Router();
 const axios = require('axios');
 
@@ -256,7 +257,7 @@ router.get('/rates', async (req, res) => {
     const rates = await fetchRates();
     res.json({ success: true, rates });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -267,7 +268,7 @@ router.get('/all', async (req, res) => {
     const data = await fetchAllRates(force);
     res.json({ success: true, ...data });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    serverError(res, err);
   }
 });
 

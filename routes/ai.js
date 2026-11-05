@@ -1,8 +1,10 @@
 const express = require('express');
+const { serverError } = require('../middleware/serverError');
 const router = express.Router();
 const axios = require('axios');
 const { fetchGenelPara } = require('./exchange');
 const { db } = require('../db/turso');
+const { consumeAiQuota, aiLimitReached } = require('../middleware/plan');
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const GEMINI_MODELS = ['gemini-3.5-flash', 'gemini-3.5-flash-lite', 'gemini-3-flash-preview', 'gemini-3.8-flash'];
@@ -11,8 +13,9 @@ async function requestGemini(body) {
   let lastErr = null;
   for (const model of GEMINI_MODELS) {
     try {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
-      const response = await axios.post(url, body, { timeout: 25000 });
+      // Anahtar adreste değil başlıkta: istek adresi loglara düşse bile anahtar görünmez
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+      const response = await axios.post(url, body, { timeout: 25000, headers: { 'x-goog-api-key': GEMINI_API_KEY } });
       return { response, model };
     } catch (err) {
       lastErr = err;
@@ -367,6 +370,8 @@ async function handleAnalyze(req, res) {
     }
     analysisCache.delete(cacheKey);
 
+    if (GEMINI_API_KEY && !(await consumeAiQuota(req.authUserId, 'analyze'))) return aiLimitReached(res, 'analyze');
+
     // Fetch exchange rates from GenelPara API for AI Context
     let rates = { USD: 38.35, EUR: 41.75, GA: 3100, C: 5050 };
     try {
@@ -422,7 +427,7 @@ async function handleAnalyze(req, res) {
 
   } catch (err) {
     console.error('[AI] Analysis error:', err);
-    res.status(500).json({ success: false, error: err.message });
+    serverError(res, err);
   }
 }
 
@@ -435,6 +440,7 @@ async function handleChat(req, res) {
     if (!message || !message.trim()) {
       return res.status(400).json({ success: false, error: 'Mesaj boş olamaz.' });
     }
+    if (GEMINI_API_KEY && !(await consumeAiQuota(req.authUserId, 'chat'))) return aiLimitReached(res, 'chat');
 
     let payments = Array.isArray(providedPayments) ? providedPayments : [];
     let settings = providedSettings || {};
@@ -543,7 +549,7 @@ Finansal sorularda gerçek verilere atıfta bulun; diğer konularda normal bir y
     return res.json({ success: true, reply, source: 'smart_local' });
   } catch (err) {
     console.error('[AI CHAT Error]:', err);
-    res.status(500).json({ success: false, error: err.message });
+    serverError(res, err);
   }
 }
 
@@ -573,6 +579,7 @@ router.post('/parse-statement', async (req, res) => {
     const { file, banks } = req.body || {};
     if (!GEMINI_API_KEY) return res.status(503).json({ success: false, error: 'Yapay zekâ servisi şu an kullanılamıyor.' });
     const part = dataUrlToInline(file, ['application/pdf', 'image/']);
+    if (part && !(await consumeAiQuota(req.authUserId, 'statement'))) return aiLimitReached(res, 'statement');
     if (!part) return res.status(400).json({ success: false, error: 'Ekstre dosyası okunamadı (PDF veya fotoğraf, en fazla 10MB).' });
 
     const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Istanbul' });
@@ -652,6 +659,7 @@ router.post('/parse-payment', async (req, res) => {
     const imagePart = image ? dataUrlToInline(image, ['image/']) : null;
     if (audio && !audioPart) return res.status(400).json({ success: false, error: 'Ses kaydı okunamadı.' });
     if (image && !imagePart) return res.status(400).json({ success: false, error: 'Fotoğraf okunamadı.' });
+    if ((audioPart || imagePart || (text || '').trim()) && !(await consumeAiQuota(req.authUserId, 'parse'))) return aiLimitReached(res, 'parse');
     if (!audioPart && !imagePart && !(text || '').trim()) return res.status(400).json({ success: false, error: 'Ses, fotoğraf veya metin gerekli.' });
 
     const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Istanbul' }); // YYYY-MM-DD

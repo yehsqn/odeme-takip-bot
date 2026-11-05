@@ -3,6 +3,7 @@ const { db } = require('./db/turso');
 const { sendToUser } = require('./websocket');
 const { sendOverdueEmail } = require('./mailer');
 const { runEmailBackups } = require('./emailBackup');
+const { retryPendingContracts } = require('./contracts');
 
 /**
  * Belirli bir kullanıcı veya saati gelen tüm kullanıcılar için ödeme hatırlatıcılarını kontrol eder.
@@ -192,10 +193,67 @@ async function checkUpcomingPayments(forceAll = false, targetUserId = null) {
 }
 
 /** Hata kayıtlarını ve 90 gündür kullanılmayan oturumları siler (oturum anahtarları zaten 60 günde dolar). */
+/** Denemesi 24 saat içinde bitecek kullanıcılara uygulama içi bir kez hatırlatma gönderir. */
+async function sendTrialReminders() {
+  const r = await db.execute(`SELECT u.id, (SELECT COUNT(*) FROM payments p WHERE p.user_id = u.id) AS cnt FROM users u
+    WHERE u.subscription_type = 'trial' AND u.trial_reminded_at IS NULL
+      AND datetime(u.subscription_expiry) > datetime('now')
+      AND datetime(u.subscription_expiry) <= datetime('now', '+24 hours')`);
+  for (const u of r.rows) {
+    const cnt = Number(u.cnt) || 0;
+    await db.execute({ sql: "UPDATE users SET trial_reminded_at = datetime('now') WHERE id = ?", args: [u.id] });
+    await sendToUser(u.id, {
+      type: 'TRIAL_ENDING',
+      title: '⏳ PRO denemen yarın bitiyor',
+      body: `${cnt ? `Şu an ${cnt} ödemeni takip ediyorsun. ` : ''}Kayıtların silinmez; deneme bitince yeni kayıt ekleme ve PRO özellikleri ücretsiz sınırlara döner.`,
+    }).catch(err => console.error('[TRIAL] Bildirim hatası:', err.message));
+  }
+  console.log(`[TRIAL] ${r.rows.length} deneme hatırlatması gönderildi.`);
+}
+
+/** Önümüzdeki 7 günde ödemesi olan kullanıcılara haftalık özet bırakır (hatırlatmaları kapatanlar hariç). */
+async function sendWeeklySummaries() {
+  const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Istanbul' });
+  const today = fmt.format(new Date());
+  const last = fmt.format(new Date(Date.now() + 6 * 86400000));
+  const r = await db.execute(`SELECT p.user_id, p.title, p.installment_plan FROM payments p
+    JOIN users u ON u.id = p.user_id
+    LEFT JOIN settings s ON s.user_id = p.user_id
+    WHERE COALESCE(u.is_banned, 0) = 0 AND COALESCE(s.notifications_enabled, 1) = 1`);
+
+  const byUser = new Map();
+  for (const row of r.rows) {
+    let plan = [];
+    try { plan = JSON.parse(row.installment_plan || '[]'); } catch { continue; }
+    for (const inst of plan) {
+      if (inst.isPaid || !inst.date) continue;
+      const when = new Date(inst.date);
+      if (Number.isNaN(when.getTime())) continue;
+      const day = fmt.format(when);
+      if (day < today || day > last) continue;
+      if (!byUser.has(row.user_id)) byUser.set(row.user_id, []);
+      byUser.get(row.user_id).push({ title: row.title, day, amount: Number(inst.amount) || 0 });
+    }
+  }
+
+  for (const [userId, items] of byUser) {
+    items.sort((a, b) => a.day.localeCompare(b.day));
+    const total = items.reduce((s, i) => s + i.amount, 0).toLocaleString('tr-TR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const [y, m, d] = items[0].day.split('-');
+    await sendToUser(userId, {
+      type: 'WEEKLY_SUMMARY',
+      title: `📅 Bu hafta ${items.length} ödemen var`,
+      body: `Toplam ${total} TL. En yakını: ${items[0].title}, ${d}.${m}.${y}`,
+    }).catch(err => console.error('[WEEKLY] Bildirim hatası:', err.message));
+  }
+  console.log(`[WEEKLY] ${byUser.size} kullanıcıya haftalık özet gönderildi.`);
+}
+
 async function pruneOldRecords() {
   const [errors, sessions] = await db.batch([
     `DELETE FROM app_errors WHERE datetime(created_at) < datetime('now', '-90 days')`,
     `DELETE FROM user_sessions WHERE datetime(last_active_at) < datetime('now', '-90 days')`,
+    `DELETE FROM app_events WHERE datetime(created_at) < datetime('now', '-90 days')`,
   ], 'write');
   console.log(`[CRON] Eski kayıtlar silindi: ${errors.rowsAffected} hata, ${sessions.rowsAffected} oturum`);
 }
@@ -219,6 +277,19 @@ function initCron() {
     pruneOldRecords().catch(err => console.error('[CRON] Kayıt temizliği hatası:', err.message));
   }, { timezone: 'Europe/Istanbul' });
 
+  cron.schedule('0 9 * * 1', () => {
+    sendWeeklySummaries().catch(err => console.error('[WEEKLY] Özet hatası:', err.message));
+  }, { timezone: 'Europe/Istanbul' });
+
+  // Gönderilemeyen sözleşme kopyalarını tekrar dene
+  cron.schedule('*/15 * * * *', () => {
+    retryPendingContracts().catch(err => console.error('[CONTRACT] Tekrar deneme hatası:', err.message));
+  });
+
+  cron.schedule('0 10 * * *', () => {
+    sendTrialReminders().catch(err => console.error('[TRIAL] Hatırlatma hatası:', err.message));
+  }, { timezone: 'Europe/Istanbul' });
+
   cron.schedule('* * * * *', async () => {
     await checkUpcomingPayments(false);
   });
@@ -226,4 +297,4 @@ function initCron() {
   console.log('[CRON] Dinamik saatli hatırlatıcı zamanlayıcısı aktif (Her dakika kontrol edilir)');
 }
 
-module.exports = { initCron, checkUpcomingPayments, pruneOldRecords };
+module.exports = { sendWeeklySummaries, sendTrialReminders, initCron, checkUpcomingPayments, pruneOldRecords };

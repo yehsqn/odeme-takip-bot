@@ -10,6 +10,7 @@
  */
 
 const { db } = require('../db/turso');
+const { serverError } = require('./serverError');
 const { PAYMENT_PERMISSIONS, PAYMENT_METHOD_LABELS, CUSTOMER_TYPE_LABELS } = require('../constants/customerTypes');
 
 /**
@@ -70,7 +71,7 @@ function requirePaymentPermission(requiredMethod) {
       next();
     } catch (err) {
       console.error('[customerGuard] Hata:', err.message);
-      res.status(500).json({ success: false, error: err.message });
+      serverError(res, err);
     }
   };
 }

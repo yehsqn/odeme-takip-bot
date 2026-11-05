@@ -62,9 +62,9 @@ const isAllowedOrigin = (origin) => {
   if (!origin) return true; // Mobil uygulama (Capacitor), Electron ve sunucular arası çağrılar
   if (allowedOrigins.includes(origin)) return true;
   if (/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) return true;
-  if (/\.onrender\.com$/.test(origin)) return true;
   if (/\.yehsqn\.com$/.test(origin) || origin === 'https://yehsqn.com') return true;
   if (/\.paypulse\.(app|com)$/.test(origin)) return true;
+  if (origin === 'null' || origin.startsWith('file:')) return true; // Masaüstü exe sayfayı yerel dosyadan açar
   return false;
 };
 
@@ -73,9 +73,8 @@ app.use(cors({
     if (isAllowedOrigin(origin)) {
       return callback(null, true);
     }
-    // Masaüstü exe file:// (Origin: null/file://) üzerinden çağırır; oturum Bearer token ile
-    // doğrulandığı için (çerez yok) diğer kökenlere izin vermek güvenlik açığı oluşturmaz.
-    return callback(null, true);
+    // Tanımadığımız sitelere CORS başlığı verilmez; tarayıcı yanıtı o sitenin koduna göstermez.
+    return callback(null, false);
   },
   credentials: true
 }));
@@ -151,6 +150,10 @@ app.use('/api/ai', aiRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/customer-profile', customerProfileRoutes);
 app.use('/api/feedback', feedbackRoutes);
+app.use('/api/events', require('./routes/events'));
+app.use('/api/devices', require('./routes/devices'));
+app.use('/api/referral/redeem', authLimiter);
+app.use('/api/referral', require('./routes/referral'));
 app.use('/api/game', gameRoutes);
 app.use('/api/wallets', walletsRoutes);
 app.use('/api/portfolio', portfolioRoutes);

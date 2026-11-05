@@ -1,4 +1,5 @@
 const express = require('express');
+const { serverError } = require('../middleware/serverError');
 const router = express.Router();
 const { db } = require('../db/turso');
 const { sendMail } = require('../mailer');
@@ -97,7 +98,7 @@ router.get('/', requireAdmin, async (req, res) => {
     });
     res.json({ success: true, feedbacks: result.rows });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    serverError(res, err);
   }
 });
 

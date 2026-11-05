@@ -1,9 +1,12 @@
 const express = require('express');
+const { serverError } = require('../middleware/serverError');
 const router = express.Router();
 const { stampPlan, parsePlan } = require('../game/stamp');
 const { ensureSelfParam } = require('../middleware/session');
 
 // Yoldaki :userId oturum sahibi olmalı (başkasının verisine erişimi engeller)
+const { FREE_PAYMENTS, userIsPremium } = require('../middleware/plan');
+
 router.param('userId', ensureSelfParam);
 const { db } = require('../db/turso');
 const crypto = require('crypto');
@@ -44,7 +47,7 @@ router.get('/:userId', async (req, res) => {
     const payments = result.rows.map(formatPayment);
     res.json({ success: true, payments });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -52,6 +55,10 @@ router.get('/:userId', async (req, res) => {
 router.post('/', async (req, res) => {
   try {
     const p = req.body;
+    const count = (await db.execute({ sql: 'SELECT COUNT(*) AS cnt FROM payments WHERE user_id = ?', args: [req.authUserId] })).rows[0]?.cnt;
+    if (Number(count) >= FREE_PAYMENTS && !(await userIsPremium(req.authUserId))) {
+      return res.status(403).json({ success: false, premiumRequired: true, code: 'PAYMENT_LIMIT', error: `Ücretsiz planda en fazla ${FREE_PAYMENTS} ödeme eklenebilir.` });
+    }
     const id = genId();
     await db.execute({
       sql: `INSERT INTO payments (id, user_id, payment_id, title, amount, installments, date, category, bank, type, installment_plan, currency, original_amount, created_at)
@@ -77,7 +84,7 @@ router.post('/', async (req, res) => {
 
     res.json({ success: true, payment: newPayment });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -112,7 +119,7 @@ router.put('/:id', async (req, res) => {
     const result = await db.execute({ sql: 'SELECT * FROM payments WHERE id = ? AND user_id = ?', args: [req.params.id, req.authUserId] });
     res.json({ success: true, payment: formatPayment(result.rows[0]) });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -122,7 +129,7 @@ router.delete('/:id', async (req, res) => {
     await db.execute({ sql: 'DELETE FROM payments WHERE id = ? AND user_id = ?', args: [req.params.id, req.authUserId] });
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -162,7 +169,7 @@ router.put('/:id/installment', async (req, res) => {
     const updated = await db.execute({ sql: 'SELECT * FROM payments WHERE id = ?', args: [req.params.id] });
     res.json({ success: true, payment: formatPayment(updated.rows[0]) });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    serverError(res, err);
   }
 });
 

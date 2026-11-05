@@ -604,3 +604,6 @@ router.post('/report', async (req, res) => {
 });
 
 module.exports = router;
+module.exports.areFriends = areFriends;
+module.exports.isBlockedEitherWay = isBlockedEitherWay;
+module.exports.publicName = publicName;

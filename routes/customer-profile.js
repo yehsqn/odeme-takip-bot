@@ -8,6 +8,7 @@
  */
 
 const express = require('express');
+const { serverError } = require('../middleware/serverError');
 const router = express.Router();
 const { ensureSelfParam } = require('../middleware/session');
 
@@ -95,7 +96,7 @@ router.get('/:userId', async (req, res) => {
       profile,
     });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -126,7 +127,7 @@ router.get('/:userId/permissions', async (req, res) => {
       })),
     });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -213,7 +214,7 @@ router.put('/:userId', async (req, res) => {
 
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    serverError(res, err);
   }
 });
 

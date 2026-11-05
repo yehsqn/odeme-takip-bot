@@ -5,6 +5,7 @@
  * GET  /api/admin/broadcasts       — geçmiş duyurular
  */
 const express = require('express');
+const { serverError } = require('../middleware/serverError');
 const router = express.Router();
 const crypto = require('crypto');
 const { db } = require('../db/turso');
@@ -92,6 +93,17 @@ router.get('/broadcasts', async (req, res) => {
   }
 });
 
+// GET /api/admin/funnel — Son 30 günün satın alma hunisi
+router.get('/funnel', async (req, res) => {
+  try {
+    const r = await db.execute(`SELECT name, COUNT(*) AS total, COUNT(DISTINCT user_id) AS users FROM app_events
+      WHERE datetime(created_at) >= datetime('now', '-30 days') GROUP BY name`);
+    res.json({ success: true, funnel: r.rows });
+  } catch (err) {
+    res.status(500).json({ success: false, error: 'Huni verisi alınamadı.' });
+  }
+});
+
 // GET /api/admin/users — Kullanıcı listesi (ban ve üyelik detaylarıyla)
 router.get('/users', async (req, res) => {
   try {
@@ -118,7 +130,7 @@ router.get('/users', async (req, res) => {
     }));
     res.json({ success: true, users });
   } catch (err) {
-    res.status(500).json({ success: false, error: 'Kullanıcı listesi alınamadı: ' + err.message });
+    serverError(res, err, 'Kullanıcı listesi alınamadı');
   }
 });
 
@@ -154,7 +166,7 @@ router.post('/ban-user', async (req, res) => {
         : 'Kullanıcı süresiz banlandı ve tüm oturumları sonlandırıldı.'
     });
   } catch (err) {
-    res.status(500).json({ success: false, error: 'Kullanıcı banlanamadı: ' + err.message });
+    serverError(res, err, 'Kullanıcı banlanamadı');
   }
 });
 
@@ -177,7 +189,7 @@ router.post('/unban-user', async (req, res) => {
 
     res.json({ success: true, message: 'Kullanıcının banı kaldırıldı.' });
   } catch (err) {
-    res.status(500).json({ success: false, error: 'Ban kaldırılamadı: ' + err.message });
+    serverError(res, err, 'Ban kaldırılamadı');
   }
 });
 
@@ -197,7 +209,7 @@ router.get('/reports', async (req, res) => {
     const result = await db.execute(sql);
     res.json({ success: true, reports: result.rows });
   } catch (err) {
-    res.status(500).json({ success: false, error: 'Şikayetler alınamadı: ' + err.message });
+    serverError(res, err, 'Şikayetler alınamadı');
   }
 });
 
@@ -215,7 +227,7 @@ router.post('/resolve-report', async (req, res) => {
 
     res.json({ success: true, message: `Şikayet durumu "${newStatus}" olarak güncellendi.` });
   } catch (err) {
-    res.status(500).json({ success: false, error: 'İşlem başarısız: ' + err.message });
+    serverError(res, err, 'İşlem başarısız');
   }
 });
 

@@ -1,4 +1,5 @@
 const express = require('express');
+const { serverError } = require('../middleware/serverError');
 const router = express.Router();
 const { ensureSelfParam } = require('../middleware/session');
 
@@ -24,7 +25,7 @@ router.get('/settings/:userId', async (req, res) => {
       backup: row ? { enabled: !!row.backup_enabled, time: row.backup_time || '00:00' } : { enabled: false, time: '00:00' }
     });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -39,7 +40,7 @@ router.post('/settings', async (req, res) => {
     });
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    serverError(res, err);
   }
 });
 
