@@ -4,14 +4,17 @@ const router = express.Router();
 const axios = require('axios');
 const { fetchGenelPara } = require('./exchange');
 const { db } = require('../db/turso');
-const { consumeAiQuota, aiLimitReached } = require('../middleware/plan');
+const { consumeAiQuota, getAiQuota, aiLimitReached } = require('../middleware/plan');
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const GEMINI_MODELS = ['gemini-3.5-flash', 'gemini-3.5-flash-lite', 'gemini-3-flash-preview', 'gemini-3.8-flash'];
+// Sohbet kısa yanıt ister; ucuz model önce denenir
+const CHAT_MODELS = ['gemini-3.5-flash-lite', 'gemini-3.5-flash', 'gemini-3-flash-preview'];
+const CHAT_MAX_CHARS = 2000;
 
-async function requestGemini(body) {
+async function requestGemini(body, models = GEMINI_MODELS) {
   let lastErr = null;
-  for (const model of GEMINI_MODELS) {
+  for (const model of models) {
     try {
       // Anahtar adreste değil başlıkta: istek adresi loglara düşse bile anahtar görünmez
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
@@ -370,7 +373,10 @@ async function handleAnalyze(req, res) {
     }
     analysisCache.delete(cacheKey);
 
-    if (GEMINI_API_KEY && !(await consumeAiQuota(req.authUserId, 'analyze'))) return aiLimitReached(res, 'analyze');
+    if (GEMINI_API_KEY) {
+      const quota = await consumeAiQuota(req.authUserId, 'analyze');
+      if (!quota.ok) return aiLimitReached(res, 'analyze', quota);
+    }
 
     // Fetch exchange rates from GenelPara API for AI Context
     let rates = { USD: 38.35, EUR: 41.75, GA: 3100, C: 5050 };
@@ -437,10 +443,18 @@ async function handleChat(req, res) {
     const { userId, message, history, payments: providedPayments, settings: providedSettings, dailyIncomes: providedIncomes, lang } = req.body || {};
     const language = lang || 'tr';
 
-    if (!message || !message.trim()) {
+    if (typeof message !== 'string' || !message.trim()) {
       return res.status(400).json({ success: false, error: 'Mesaj boş olamaz.' });
     }
-    if (GEMINI_API_KEY && !(await consumeAiQuota(req.authUserId, 'chat'))) return aiLimitReached(res, 'chat');
+    if (message.length > CHAT_MAX_CHARS) {
+      return res.status(400).json({ success: false, error: `Mesaj en fazla ${CHAT_MAX_CHARS} karakter olabilir.` });
+    }
+    let quota = null;
+    if (GEMINI_API_KEY) {
+      quota = await consumeAiQuota(req.authUserId, 'chat');
+      if (!quota.ok) return aiLimitReached(res, 'chat', quota);
+    }
+    const remaining = () => quota?.remaining ?? null;
 
     let payments = Array.isArray(providedPayments) ? providedPayments : [];
     let settings = providedSettings || {};
@@ -470,10 +484,11 @@ async function handleChat(req, res) {
 
     if (GEMINI_API_KEY) {
       try {
-        const systemPrompt = `Sen PayPulse uygulamasının içindeki samimi, zeki ve genel amaçlı bir yapay zeka asistanısın (ChatGPT/Gemini gibi). Aynı zamanda finans koçusun.
-Selamlaşma, sohbet, genel kültür, kodlama, tavsiye gibi HER konuda doğal şekilde konuşabilirsin; sadece finansla sınırlı değilsin.
-Kullanıcının finansal verilerini SADECE soru finansla ilgiliyse kullan; selam ve sohbette bunları zorla anlatma.
-Kısa, doğal ve sıcak yanıtlar ver; gerekirse emoji kullan. Yanıt dili Türkçe (kullanıcı başka dilde yazarsa o dilde).
+        const systemPrompt = `Sen PayPulse uygulamasının içindeki samimi finans koçusun.
+Yalnızca kişisel finans, bütçe, borç, taksit, kart, birikim ve PayPulse uygulamasının kullanımı hakkında konuş. Selamlaşmaya kısaca karşılık ver.
+Bu konular dışındaki istekleri (kod yazma, ödev, genel kültür vb.) tek cümleyle kibarca geri çevir ve finansla ilgili nasıl yardım edebileceğini söyle.
+Rakamları YALNIZCA aşağıdaki özetten al. Kendin toplama, çarpma veya tahmin yapma; özette olmayan bir tutar sorulursa bunu uygulamadaki ilgili ekranda görebileceğini söyle.
+Yatırım ürünü alım-satım tavsiyesi verme. Kısa yaz (en fazla 120 kelime), gerekirse emoji kullan. Yanıt dili Türkçe (kullanıcı başka dilde yazarsa o dilde).
 
 Kullanıcının güncel finansal profili (referans için):
 - Toplam Kalan Borç: ${context.totalRemainingDebt.toLocaleString('tr-TR')} TL
@@ -484,14 +499,14 @@ Kullanıcının güncel finansal profili (referans için):
 - En Çok Harcanan Kategoriler: ${context.categoryBreakdown.map(c => `${c.category}: ${c.totalSpent.toLocaleString('tr-TR')} TL`).join(', ') || 'Belirtilmemiş'}
 - Yakın Ödemeler: ${context.recentPayments.slice(0, 6).map(p => `${p.title} (${p.amount.toLocaleString('tr-TR')} TL - ${p.bank})`).join(', ') || 'Yok'}
 
-Finansal sorularda gerçek verilere atıfta bulun; diğer konularda normal bir yapay zeka gibi sohbet et.`;
+Finansal sorularda bu verilere atıfta bulun.`;
 
         const formattedContents = [];
         if (Array.isArray(history) && history.length > 0) {
-          history.slice(-6).forEach(h => {
+          history.filter(h => h && typeof h.text === 'string' && h.text.trim()).slice(-6).forEach(h => {
             formattedContents.push({
               role: h.role === 'user' ? 'user' : 'model',
-              parts: [{ text: h.text }]
+              parts: [{ text: h.text.slice(0, CHAT_MAX_CHARS) }]
             });
           });
         }
@@ -503,15 +518,21 @@ Finansal sorularda gerçek verilere atıfta bulun; diğer konularda normal bir y
         const { response, model } = await requestGemini({
           systemInstruction: { parts: [{ text: systemPrompt }] },
           contents: formattedContents,
-          generationConfig: { temperature: 0.8, maxOutputTokens: 2048 }
-        });
+          generationConfig: { temperature: 0.6, maxOutputTokens: 400 }
+        }, CHAT_MODELS);
 
         const reply = (response.data?.candidates?.[0]?.content?.parts || []).map(p => p.text).filter(Boolean).join('\n');
         if (reply) {
-          return res.json({ success: true, reply, source: 'gemini', model });
+          return res.json({ success: true, reply, source: 'gemini', model, remaining: remaining() });
         }
+        console.warn('[AI CHAT] Gemini boş yanıt döndü:', response.data?.candidates?.[0]?.finishReason || '-');
       } catch (geminiErr) {
         console.warn('[AI CHAT] Gemini hatası, yerel yanıt motoruna geçiliyor:', geminiErr.response?.status, JSON.stringify(geminiErr.response?.data?.error?.message || geminiErr.message));
+      }
+      // Yapay zekâ yanıt vermediyse yerel yanıt için hak harcanmaz
+      if (quota) {
+        await quota.refund();
+        if (quota.remaining != null) quota.remaining += 1;
       }
     }
 
@@ -519,7 +540,7 @@ Finansal sorularda gerçek verilere atıfta bulun; diğer konularda normal bir y
     let reply = '';
     const q = message.toLowerCase().trim();
     if (/^(selam|merhaba|mrb|slm|hey|hi|hello|günaydın|iyi akşamlar|iyi geceler|sa|selamun aleyküm)\b/.test(q)) {
-      reply = 'Selam! 👋 Ben PayPulse asistanın. Borçların, taksitlerin ve bütçen hakkında konuşabiliriz; ya da sadece sohbet edebiliriz. Nasıl yardımcı olayım?';
+      reply = 'Selam! 👋 Ben PayPulse asistanın. Borçların, taksitlerin ve bütçen hakkında konuşabiliriz. Nasıl yardımcı olayım?';
     } else if (/nas[ıi]ls[ıi]n|naber|ne haber|nasılsın/.test(q)) {
       reply = 'İyiyim, teşekkürler! 😊 Sen nasılsın? Finansal durumunla ilgili bir şey sormak ister misin?';
     } else if (/te[sş]ekk[uü]r|sa[gğ] ol|eyvallah/.test(q)) {
@@ -546,9 +567,19 @@ Finansal sorularda gerçek verilere atıfta bulun; diğer konularda normal bir y
       reply = `Finansal verilerinizi inceledim. Toplam **${context.totalRemainingDebt.toLocaleString('tr-TR')} TL** kalan borcunuz ve bu ay **${context.totalMonthlyDebt.toLocaleString('tr-TR')} TL** taksit ödemeniz bulunuyor. Size taksitleriniz, kart stratejiniz veya bütçe planlamanız hakkında detaylı bilgi verebilirim.`;
     }
 
-    return res.json({ success: true, reply, source: 'smart_local' });
+    return res.json({ success: true, reply, source: 'smart_local', remaining: remaining() });
   } catch (err) {
     console.error('[AI CHAT Error]:', err);
+    serverError(res, err);
+  }
+}
+
+// Sohbet ekranındaki "kalan soru" göstergesi
+async function handleQuota(req, res) {
+  try {
+    const q = await getAiQuota(req.authUserId, 'chat');
+    res.json({ success: true, chat: q });
+  } catch (err) {
     serverError(res, err);
   }
 }
@@ -556,6 +587,7 @@ Finansal sorularda gerçek verilere atıfta bulun; diğer konularda normal bir y
 router.get('/analyze', handleAnalyze);
 router.post('/analyze', handleAnalyze);
 router.post('/chat', handleChat);
+router.get('/quota', handleQuota);
 
 // ── Sesle / kamerayla ödeme ekleme ─────────────────────────────────────────
 // Girdi: { text? , audio?: dataURL (webm/ogg/mp4/wav), image?: dataURL (jpeg/png/webp) }
@@ -579,7 +611,10 @@ router.post('/parse-statement', async (req, res) => {
     const { file, banks } = req.body || {};
     if (!GEMINI_API_KEY) return res.status(503).json({ success: false, error: 'Yapay zekâ servisi şu an kullanılamıyor.' });
     const part = dataUrlToInline(file, ['application/pdf', 'image/']);
-    if (part && !(await consumeAiQuota(req.authUserId, 'statement'))) return aiLimitReached(res, 'statement');
+    if (part) {
+      const quota = await consumeAiQuota(req.authUserId, 'statement');
+      if (!quota.ok) return aiLimitReached(res, 'statement', quota);
+    }
     if (!part) return res.status(400).json({ success: false, error: 'Ekstre dosyası okunamadı (PDF veya fotoğraf, en fazla 10MB).' });
 
     const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Istanbul' });
@@ -659,7 +694,10 @@ router.post('/parse-payment', async (req, res) => {
     const imagePart = image ? dataUrlToInline(image, ['image/']) : null;
     if (audio && !audioPart) return res.status(400).json({ success: false, error: 'Ses kaydı okunamadı.' });
     if (image && !imagePart) return res.status(400).json({ success: false, error: 'Fotoğraf okunamadı.' });
-    if ((audioPart || imagePart || (text || '').trim()) && !(await consumeAiQuota(req.authUserId, 'parse'))) return aiLimitReached(res, 'parse');
+    if (audioPart || imagePart || (text || '').trim()) {
+      const quota = await consumeAiQuota(req.authUserId, 'parse');
+      if (!quota.ok) return aiLimitReached(res, 'parse', quota);
+    }
     if (!audioPart && !imagePart && !(text || '').trim()) return res.status(400).json({ success: false, error: 'Ses, fotoğraf veya metin gerekli.' });
 
     const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Istanbul' }); // YYYY-MM-DD

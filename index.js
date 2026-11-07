@@ -131,6 +131,8 @@ const aiLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 60,
   keyGenerator: (req) => `u:${req.authUserId || 'anon'}`,
+  // Kalan hak sorgusu Gemini'ye gitmez; sohbet ekranı her açılışta çağırır
+  skip: (req) => req.method === 'GET' && req.path === '/quota',
   standardHeaders: true,
   legacyHeaders: false,
   message: { success: false, error: 'AI kullanım sınırına ulaştınız. Lütfen bir saat sonra tekrar deneyin.' },
