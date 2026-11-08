@@ -60,7 +60,9 @@ function getMessaging() {
     account = parseServiceAccount(raw);
   } catch (err) {
     state.error = 'json';
-    console.error('[PUSH] FIREBASE_SERVICE_ACCOUNT JSON olarak okunamadı:', err.message);
+    // Hata metni JSON'dan parça içerebilir (anahtar loga düşmesin): yalnızca konum ve uzunluk yazılır
+    const pos = /position (\d+)/.exec(String(err.message))?.[1];
+    console.error(`[PUSH] FIREBASE_SERVICE_ACCOUNT JSON olarak okunamadı (uzunluk ${String(raw).length}${pos ? `, hata konumu ${pos}` : ''}). Firebase'den indirilen dosyanın tamamını yapıştır.`);
     return null;
   }
   if (!account.private_key || !account.client_email || !account.project_id) {
