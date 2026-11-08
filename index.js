@@ -111,7 +111,11 @@ app.get('/', (req, res) => {
 });
 
 // Health check & ping (UptimeRobot ve dış servisler için)
-app.get('/health', (req, res) => res.json({ ok: true, ts: Date.now() }));
+// push: bildirim altyapısının durumu (yalnızca 'ok' ya da hata türü; gizli bilgi yok)
+app.get('/health', (req, res) => {
+  const { pushConfigured, pushError } = require('./push');
+  res.json({ ok: true, ts: Date.now(), push: pushConfigured() ? 'ok' : pushError() });
+});
 app.get('/ping', (req, res) => res.send('pong'));
 
 // Kod/şifre deneme uçları: kaba kuvvete karşı katı sınır

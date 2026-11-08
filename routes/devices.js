@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { db } = require('../db/turso');
-const { sendPush, pushConfigured } = require('../push');
+const { sendPush, pushConfigured, pushError } = require('../push');
 
 const TEST_DELAY_MS = 10000;
 const lastTest = new Map(); // kullanıcı başına dakikada bir test
@@ -46,7 +46,7 @@ router.post('/test', async (req, res) => {
     }
     const firebase = pushConfigured();
     const devices = Number((await db.execute({ sql: 'SELECT COUNT(*) AS n FROM device_tokens WHERE user_id = ?', args: [req.authUserId] })).rows[0]?.n || 0);
-    if (!firebase || !devices) return res.json({ success: true, firebase, devices, scheduled: false });
+    if (!firebase || !devices) return res.json({ success: true, firebase, firebaseError: firebase ? null : pushError(), devices, scheduled: false });
     lastTest.set(req.authUserId, now);
     const userId = req.authUserId;
     setTimeout(() => {
