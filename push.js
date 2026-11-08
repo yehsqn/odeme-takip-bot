@@ -9,6 +9,7 @@ const PUSH_TEXTS = {
   CITY_CHEER: (p) => ({ title: p.title, body: 'Ayrıntılar için dokun.' }),
   CHAT: () => ({ title: '💬 Yeni mesajın var', body: 'Okumak için dokun.' }),
   FRIEND_REQUEST: () => ({ title: '👥 Yeni arkadaşlık isteği', body: 'Görmek için dokun.' }),
+  TEST: () => ({ title: '🔔 PayPulse test bildirimi', body: 'Uygulama kapalıyken bildirimler çalışıyor.' }),
 };
 const DEAD_TOKEN = new Set(['messaging/registration-token-not-registered', 'messaging/invalid-registration-token']);
 
@@ -33,9 +34,9 @@ function getMessaging() {
 async function sendPush(userId, payload) {
   const text = PUSH_TEXTS[payload.type]?.(payload);
   const messaging = text && getMessaging();
-  if (!messaging) return;
+  if (!messaging) return { sent: 0, failed: 0 };
   const tokens = (await db.execute({ sql: 'SELECT token FROM device_tokens WHERE user_id = ?', args: [userId] })).rows.map(r => r.token);
-  if (!tokens.length) return;
+  if (!tokens.length) return { sent: 0, failed: 0 };
   const result = await messaging.sendEachForMulticast({
     tokens,
     notification: text,
@@ -43,6 +44,9 @@ async function sendPush(userId, payload) {
   });
   const dead = tokens.filter((_, i) => DEAD_TOKEN.has(result.responses[i]?.error?.code));
   for (const token of dead) await db.execute({ sql: 'DELETE FROM device_tokens WHERE token = ?', args: [token] });
+  return { sent: result.successCount, failed: result.failureCount, errors: result.responses.map(r => r.error?.code).filter(Boolean) };
 }
 
-module.exports = { sendPush, _state: state };
+const pushConfigured = () => !!getMessaging();
+
+module.exports = { sendPush, pushConfigured, _state: state };

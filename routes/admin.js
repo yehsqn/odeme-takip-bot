@@ -9,7 +9,8 @@ const { serverError } = require('../middleware/serverError');
 const router = express.Router();
 const crypto = require('crypto');
 const { db } = require('../db/turso');
-const { requireAdmin, invalidateUser, unsubscribeSig } = require('../middleware/session');
+const { requireAdmin, invalidateUser, unsubscribeSig, isAdmin } = require('../middleware/session');
+const { deleteUserData } = require('../accountDeletion');
 const { sendToUser } = require('../websocket');
 const { sendMail } = require('../mailer');
 
@@ -190,6 +191,31 @@ router.post('/unban-user', async (req, res) => {
     res.json({ success: true, message: 'Kullanıcının banı kaldırıldı.' });
   } catch (err) {
     serverError(res, err, 'Ban kaldırılamadı');
+  }
+});
+
+// POST /api/admin/delete-user — Hesabı ve tüm verilerini kalıcı olarak siler.
+// Yanlışlıkla silmeye karşı admin "sudo accept" yazmalı; admin hesapları ve kendi hesabı silinemez.
+const DELETE_CONFIRM = 'sudo accept';
+router.post('/delete-user', async (req, res) => {
+  try {
+    const { targetUserId, confirmText } = req.body || {};
+    if (!targetUserId || typeof targetUserId !== 'string') return res.status(400).json({ success: false, error: 'targetUserId gerekli' });
+    if (String(confirmText || '').trim() !== DELETE_CONFIRM) {
+      return res.status(400).json({ success: false, error: `Onaylamak için "${DELETE_CONFIRM}" yazmalısın.` });
+    }
+    if (targetUserId === String(req.authUserId)) return res.status(400).json({ success: false, error: 'Kendi hesabını buradan silemezsin.' });
+    const r = await db.execute({ sql: 'SELECT id, email, role FROM users WHERE id = ?', args: [targetUserId] });
+    const target = r.rows[0];
+    if (!target) return res.status(404).json({ success: false, error: 'Kullanıcı bulunamadı' });
+    if (isAdmin(target)) return res.status(403).json({ success: false, error: 'Admin hesapları silinemez.' });
+
+    await deleteUserData(targetUserId);
+    invalidateUser(targetUserId);
+    console.log(`[ADMIN] Hesap silindi: ${targetUserId} (admin: ${req.authUserId})`);
+    res.json({ success: true, message: 'Hesap ve tüm verileri kalıcı olarak silindi.' });
+  } catch (err) {
+    serverError(res, err, 'Hesap silinemedi');
   }
 });
 
