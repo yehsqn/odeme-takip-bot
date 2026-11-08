@@ -181,6 +181,18 @@ async function createSessionRow(req, userId) {
 }
 
 /** Kullanıcı bilgisi + oturum anahtarı ile yanıt */
+/**
+ * "PIN'imi unuttum": kullanıcı hesap şifresi / Google / Apple ile yeniden kimliğini kanıtladığında
+ * istenirse uygulama kilidi (PIN) kaldırılır. Veriler silinmez; yeni PIN Ayarlar'dan belirlenir.
+ * Yalnızca başarılı tam girişten sonra çağrılır.
+ */
+async function clearPinIfRequested(req, user) {
+  // Yalnızca sıfırlamayı isteyen hesap için (başka hesapla girilirse dokunulmaz)
+  if (!user?.pin || !req?.body?.resetPinFor || String(req.body.resetPinFor) !== String(user.id)) return user;
+  await db.execute({ sql: 'UPDATE users SET pin = NULL, pin_fail_count = 0, pin_locked_until = NULL WHERE id = ?', args: [user.id] });
+  return { ...user, pin: null, pin_fail_count: 0, pin_locked_until: null };
+}
+
 async function sendSession(res, row, extra = {}, req = null) {
   let sid = null;
   if (req) {
@@ -312,7 +324,7 @@ router.post('/login', async (req, res) => {
       return res.status(403).json({ success: false, needsVerification: true, email: user.email, emailSent, error: 'E-posta adresin henüz doğrulanmadı. Sana yeni bir kod gönderdik.' });
     }
 
-    await sendSession(res, user, {}, req);
+    await sendSession(res, await clearPinIfRequested(req, user), {}, req);
   } catch (err) {
     res.status(500).json({ success: false, error: 'Giriş yapılırken bir hata oluştu.' });
   }
@@ -577,6 +589,7 @@ async function finishSocialLogin(req, res, provider, payload, consent) {
     invalidateUser(user.id);
     user = (await db.execute({ sql: 'SELECT * FROM users WHERE id = ?', args: [user.id] })).rows[0];
   }
+  user = await clearPinIfRequested(req, user);
   const formatted = formatUser(user);
   formatted.displayName = formatted.displayName || payload.name || '';
   formatted.avatar = formatted.avatar || payload.picture || '';
