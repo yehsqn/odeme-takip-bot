@@ -480,7 +480,8 @@ function getAllowedGoogleAudiences() {
     process.env.GOOGLE_CLIENT_ID,
     process.env.VITE_GOOGLE_CLIENT_ID,
     '786955286273-agdl3o6n9h87iptl618knpd0k2e4mbrb.apps.googleusercontent.com',
-    '214147261440-rmmia8qnauqmbo4pm382nejch7ddh99t.apps.googleusercontent.com'
+    '214147261440-rmmia8qnauqmbo4pm382nejch7ddh99t.apps.googleusercontent.com',
+    '214147261440-65lo3rb90tqps54g9p3b88dqblicopet.apps.googleusercontent.com' // iOS istemcisi
   ];
 
   if (process.env.GOOGLE_IOS_CLIENT_ID) {
