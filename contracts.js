@@ -16,8 +16,27 @@ const fmtDate = (iso) => {
   return Number.isNaN(d.getTime()) ? '-' : d.toLocaleString('tr-TR', { timeZone: 'Europe/Istanbul', dateStyle: 'long', timeStyle: 'short' });
 };
 
+/** Mağazaya göre değişen ifadeler; uygulamadaki src/utils/store.js ile aynı tutulmalı. */
+function storeTexts(platform) {
+  if (platform === 'ios') {
+    return {
+      name: 'App Store', of: "App Store'un",
+      manage: 'iPhone Ayarlar → adın → Abonelikler',
+      refundTo: "Apple'ın iade sistemi (reportaproblem.apple.com) üzerinden; Apple talebi sonuçlandırmazsa sana doğrudan banka havalesiyle",
+      refundPolicy: "Apple'ın iade politikası",
+    };
+  }
+  return {
+    name: 'Google Play', of: "Google Play'in",
+    manage: 'Google Play Store → Profil → Ödemeler ve abonelikler → Abonelikler',
+    refundTo: 'Google Play üzerinden ödemeyi yaptığın yönteme',
+    refundPolicy: "Google Play'in iade politikası",
+  };
+}
+
 /** Sözleşme metni. PreSaleInfoModal.jsx ile aynı içerikte tutulmalı. */
 function buildContract({ seller, consumer, acceptance, purchasedAt }) {
+  const st = storeTexts(acceptance.platform);
   const sellerLine = [
     `<strong>${esc(sellerDisplayName(seller))}</strong>`,
     seller.mersisNo ? `MERSİS: ${esc(seller.mersisNo)}` : '',
@@ -38,13 +57,13 @@ function buildContract({ seller, consumer, acceptance, purchasedAt }) {
     ['2. Sözleşmenin konusu', `<p>PayPulse Premium: uygulamadaki Premium özelliklere (yapay zekâ analizleri, gelişmiş raporlar, sınırsız takip ve diğer Premium özellikler) abonelik süresince erişim sağlayan, elektronik ortamda anında ifa edilen dijital hizmettir. Premium, hesabına bağlıdır; aynı hesapla girdiğin tüm cihazlarda geçerlidir.</p>`],
     ['3. Tarihler', `<ul><li>Sözleşmenin kurulduğu (ön bilgilendirmenin onaylandığı) tarih: ${esc(fmtDate(acceptance.accepted_at))}</li><li>Hizmetin başladığı tarih: ${esc(fmtDate(purchasedAt))}</li></ul>`],
     ['4. Fiyat, ödeme ve yenileme', `<ul>
-      <li>Seçilen plan: <strong>${plan}</strong> (vergiler dahil). Kesin tutar ödeme ekranında Google Play tarafından gösterilmiştir.</li>
-      <li>Ödeme Google Play üzerinden alınır; kart bilgilerin PayPulse'a iletilmez ve saklanmaz.</li>
-      <li>Abonelik belirsiz sürelidir: <strong>sen iptal edene kadar devam eder</strong>. Ücret her dönem (${period}) başında o anki fiyatla Google Play üzerinden alınır. Fiyat değişikliği olursa tahsilattan önce bildirilir.</li>
+      <li>Seçilen plan: <strong>${plan}</strong> (vergiler dahil). Kesin tutar ödeme ekranında ${st.name} tarafından gösterilmiştir.</li>
+      <li>Ödeme ${st.name} üzerinden alınır; kart bilgilerin PayPulse'a iletilmez ve saklanmaz.</li>
+      <li>Abonelik belirsiz sürelidir: <strong>sen iptal edene kadar devam eder</strong>. Ücret her dönem (${period}) başında o anki fiyatla ${st.name} üzerinden alınır. Fiyat değişikliği olursa tahsilattan önce bildirilir.</li>
       <li>Ek bir teslimat veya kargo ücreti yoktur.</li></ul>`],
-    ['5. Ödeme alınamazsa', `<p>Yenileme bedeli Google Play tarafından tahsil edilemezse Google Play'in ödeme yeniden deneme süreci uygulanır; bedel tahsil edilemezse Premium erişimi sona erer. Bunun için gecikme faizi, ceza veya ek bir bedel istenmez.</p>`],
-    ['6. İptal', `<p>Aboneliği istediğin an uygulamada Ayarlar → "Aboneliği yönet / iptal et" ya da Google Play Store → Profil → Ödemeler ve abonelikler → Abonelikler bölümünden iptal edebilirsin. İptal, içinde bulunulan dönemin sonunda geçerli olur; dönem sonuna kadar Premium kullanılmaya devam eder. Uygulamadaki hesabını silmek aboneliği kendiliğinden iptal etmez.</p><p>İptal talebini ${esc(seller.email)} adresine e-postayla da iletebilirsin. <strong>Kalan süre için iade:</strong> İptalden sonra içinde bulunulan dönemin kullanılmayan kısmının ücretini geri almak istersen hesabındaki e-posta adresinden aynı adrese yazman yeterli. Talebin en geç 7 gün içinde işlenir; kalan süreye düşen tutar Google Play üzerinden ödemeyi yaptığın yönteme iade edilir ve Premium erişimi o tarihte sona erer.</p>`],
-    ['7. Cayma hakkı', `<p>Mesafeli Sözleşmeler Yönetmeliği md. 15/1-(ğ) uyarınca, elektronik ortamda anında ifa edilen hizmetlerde ve tüketiciye anında teslim edilen gayri maddi mallarda, ifaya tüketicinin onayıyla başlandığında cayma hakkı kullanılamaz. Satın alma adımında verdiğin onayla Premium hemen açıldığından, ilgili dönem için cayma hakkı sona erer. İade talepleri ayrıca Google Play'in iade politikası kapsamında değerlendirilebilir.</p>`],
+    ['5. Ödeme alınamazsa', `<p>Yenileme bedeli ${st.name} tarafından tahsil edilemezse ${st.of} ödeme yeniden deneme süreci uygulanır; bedel tahsil edilemezse Premium erişimi sona erer. Bunun için gecikme faizi, ceza veya ek bir bedel istenmez.</p>`],
+    ['6. İptal', `<p>Aboneliği istediğin an uygulamada Ayarlar → "Aboneliği yönet / iptal et" ya da ${st.manage} bölümünden iptal edebilirsin. İptal, içinde bulunulan dönemin sonunda geçerli olur; dönem sonuna kadar Premium kullanılmaya devam eder. Uygulamadaki hesabını silmek aboneliği kendiliğinden iptal etmez.</p><p>İptal talebini ${esc(seller.email)} adresine e-postayla da iletebilirsin. <strong>Kalan süre için iade:</strong> İptalden sonra içinde bulunulan dönemin kullanılmayan kısmının ücretini geri almak istersen hesabındaki e-posta adresinden aynı adrese yazman yeterli. Talebin en geç 7 gün içinde işlenir; kalan süreye düşen tutar ${st.refundTo} iade edilir ve Premium erişimi o tarihte sona erer.</p>`],
+    ['7. Cayma hakkı', `<p>Mesafeli Sözleşmeler Yönetmeliği md. 15/1-(ğ) uyarınca, elektronik ortamda anında ifa edilen hizmetlerde ve tüketiciye anında teslim edilen gayri maddi mallarda, ifaya tüketicinin onayıyla başlandığında cayma hakkı kullanılamaz. Satın alma adımında verdiğin onayla Premium hemen açıldığından, ilgili dönem için cayma hakkı sona erer. İade talepleri ayrıca ${st.refundPolicy} kapsamında değerlendirilebilir.</p>`],
     ['8. Ayıplı hizmet', `<p>Hizmetin ayıplı ifası halinde 6502 sayılı Tüketicinin Korunması Hakkında Kanun md. 15 uyarınca hizmetin yeniden görülmesi, hizmet sonucu ortaya çıkan eserin ücretsiz onarımı, ayıp oranında bedelden indirim veya sözleşmeden dönme haklarından birini kullanabilir; ayrıca Türk Borçlar Kanunu hükümlerine göre tazminat isteyebilirsin.</p>`],
     ['9. Şikâyet ve uyuşmazlık', `<p>Talep ve şikâyetlerini ${esc(seller.email)} adresine veya ${esc(seller.phone)} numarasına iletebilirsin. Uyuşmazlıklarda, Ticaret Bakanlığı'nca ilan edilen parasal sınırlar dahilinde tüketicinin yerleşim yerindeki Tüketici Hakem Heyetleri, bu sınırları aşan durumlarda Tüketici Mahkemeleri yetkilidir.</p>`],
     ['10. Yürürlük', `<p>Bu ön bilgilendirme formu ve sözleşme, satın alma adımında onaylanmasıyla elektronik ortamda kurulmuştur. Onaylanan form sürümü: ${esc(acceptance.form_version)} · Onay kayıt no: ${esc(acceptance.id)}. Kişisel verilerin KVKK Aydınlatma Metni'ne göre işlenir.</p>`],

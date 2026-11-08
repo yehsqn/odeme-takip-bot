@@ -115,7 +115,7 @@ app.get('/health', (req, res) => res.json({ ok: true, ts: Date.now() }));
 app.get('/ping', (req, res) => res.send('pong'));
 
 // Kod/şifre deneme uçları: kaba kuvvete karşı katı sınır
-for (const route of ['login', 'register', 'google', 'verify-pin', 'verify-income-password', 'forgot-password',
+for (const route of ['login', 'register', 'google', 'apple', 'verify-pin', 'verify-income-password', 'forgot-password',
   'verify-reset-code', 'reset-password', 'verify-email', 'verify-link', 'resend-verification', 'delete-account', 'change-password']) {
   app.use(`/api/auth/${route}`, authLimiter);
 }

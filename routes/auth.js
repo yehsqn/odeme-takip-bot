@@ -496,6 +496,155 @@ function getAllowedGoogleAudiences() {
 }
 
 // POST /api/auth/google
+/**
+ * Google / Apple ile giriş: kullanıcıyı bulur ya da oluşturur, oturum açar ve yanıtı gönderir.
+ * payload: { sub, email, name, picture } — sağlayıcı tarafından doğrulanmış kimlik.
+ */
+const SOCIAL_ID_COL = { google: 'google_id', apple: 'apple_id' };
+async function finishSocialLogin(req, res, provider, payload, consent) {
+  const idCol = SOCIAL_ID_COL[provider];
+  const { kvkkAccepted, abroadConsent, ageConfirmed, kvkkVersion, emailUpdates } = consent || {};
+  const email = payload.email ? String(payload.email).toLowerCase().trim() : '';
+
+  // Önce sağlayıcı kimliğiyle (Apple e-postayı her girişte vermeyebilir), sonra e-postayla bul
+  let result = { rows: [] };
+  if (provider === 'apple') result = await db.execute({ sql: 'SELECT * FROM users WHERE apple_id = ?', args: [payload.sub] });
+  if (!result.rows[0] && email) result = await db.execute({ sql: 'SELECT * FROM users WHERE email = ?', args: [email] });
+  let user = result.rows[0];
+  if (!user && !email) {
+    return res.status(400).json({ success: false, error: 'Hesap e-postası alınamadı. Lütfen tekrar deneyin.' });
+  }
+
+  if (!user) {
+    const id = genId();
+    const trialExpiry = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString();
+    await db.execute({
+      sql: `INSERT INTO users (id, email, password, ${idCol}, display_name, avatar, customer_type, is_premium, subscription_type, subscription_plan, subscription_status, subscription_expiry, premium_expires_at, ai_analysis_tokens, email_backup_enabled)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'trial', 'trial', 'active', ?, ?, 999, 0)`,
+      args: [id, email, 'google_oauth_' + crypto.randomBytes(16).toString('hex'), payload.sub, payload.name || '', payload.picture || '', CUSTOMER_TYPE.INDIVIDUAL, trialExpiry, trialExpiry]
+    });
+
+    const now = new Date().toISOString();
+    const nameParts = (payload.name || '').trim().split(/\s+/);
+    const firstName = nameParts[0] || '';
+    const lastName = nameParts.slice(1).join(' ') || '';
+    try {
+      await db.execute({
+        sql: `INSERT OR IGNORE INTO individual_profiles (user_id, first_name, last_name, updated_at) VALUES (?, ?, ?, ?)`,
+        args: [id, firstName, lastName, now]
+      });
+    } catch (profErr) {
+      console.warn('Social user profile insert warning:', profErr.message);
+    }
+
+    if (kvkkAccepted === true && abroadConsent === true) {
+      await saveConsents(id, { kvkkAccepted, abroadConsent, ageConfirmed, kvkkVersion, emailUpdates: emailUpdates === true });
+    }
+    result = await db.execute({ sql: 'SELECT * FROM users WHERE id = ?', args: [id] });
+    user = result.rows[0];
+  } else if (!user[idCol]) {
+    await db.execute({
+      sql: `UPDATE users SET ${idCol} = ?, display_name = COALESCE(NULLIF(display_name, ''), ?), avatar = COALESCE(NULLIF(avatar, ''), ?) WHERE id = ?`,
+      args: [payload.sub, payload.name || '', payload.picture || '', user.id]
+    });
+    result = await db.execute({ sql: 'SELECT * FROM users WHERE id = ?', args: [user.id] });
+    user = result.rows[0];
+  }
+
+  if (Number(user.is_banned) === 1 && !(await liftExpiredBan(user))) {
+    return res.status(403).json({
+      success: false,
+      code: 'USER_BANNED',
+      isBanned: true,
+      banReason: banMessage(user),
+      bannedUntil: user.banned_until || null,
+      error: 'Hesabınız askıya alınmıştır.'
+    });
+  }
+
+  if (Number(user.email_verified) === 0) {
+    // E-postası hiç doğrulanmamış hesap: şifresini bu e-postanın sahibi olmayan biri koymuş olabilir
+    // (önceden kayıt olup sahibinin Google/Apple ile girmesini bekleme saldırısı). Gerçek sahip sağlayıcıyla
+    // kanıtladığı için o şifre ve açık oturumlar geçersiz kılınır; isterse "şifremi unuttum" ile yeni şifre koyar.
+    await db.execute({
+      sql: `UPDATE users SET email_verified = 1, email_verify_code = NULL,
+              password = CASE WHEN password LIKE 'google_oauth_%' THEN password ELSE ? END,
+              token_version = COALESCE(token_version, 0) + 1
+            WHERE id = ?`,
+      args: ['google_oauth_' + crypto.randomBytes(16).toString('hex'), user.id]
+    });
+    invalidateUser(user.id);
+    user = (await db.execute({ sql: 'SELECT * FROM users WHERE id = ?', args: [user.id] })).rows[0];
+  }
+  const formatted = formatUser(user);
+  formatted.displayName = formatted.displayName || payload.name || '';
+  formatted.avatar = formatted.avatar || payload.picture || '';
+
+  const sid = await createSessionRow(req, user.id);
+  res.json({ success: true, user: formatted, token: signToken(user, sid), sessionId: sid });
+}
+
+// ── Apple ile Giriş ───────────────────────────────────────────
+// Kimlik jetonu (RS256) Apple'ın yayınladığı açık anahtarlarla doğrulanır; iss, aud (paket kimliği),
+// süre ve tek kullanımlık nonce kontrol edilir.
+const APPLE_ISS = 'https://appleid.apple.com';
+const appleAudiences = () => (process.env.APPLE_AUDIENCES || 'online.usepaypulse.app').split(',').map(x => x.trim()).filter(Boolean);
+const appleKeyCache = { at: 0, keys: [] };
+async function getAppleKeys(force = false) {
+  if (!force && appleKeyCache.keys.length && Date.now() - appleKeyCache.at < 6 * 3600 * 1000) return appleKeyCache.keys;
+  const r = await fetch(process.env.APPLE_KEYS_URL || 'https://appleid.apple.com/auth/keys');
+  if (!r.ok) throw new Error('Apple anahtarları alınamadı (' + r.status + ')');
+  appleKeyCache.keys = (await r.json()).keys || [];
+  appleKeyCache.at = Date.now();
+  return appleKeyCache.keys;
+}
+const sha256Hex = (v) => crypto.createHash('sha256').update(String(v)).digest('hex');
+async function verifyAppleIdToken(idToken, rawNonce) {
+  const parts = String(idToken || '').split('.');
+  if (parts.length !== 3) throw new Error('jeton biçimi geçersiz');
+  const header = JSON.parse(Buffer.from(parts[0], 'base64url').toString('utf8'));
+  if (header.alg !== 'RS256' || !header.kid) throw new Error('desteklenmeyen imza');
+  let jwk = (await getAppleKeys()).find(k => k.kid === header.kid);
+  if (!jwk) jwk = (await getAppleKeys(true)).find(k => k.kid === header.kid); // Apple anahtarı yenilemiş olabilir
+  if (!jwk) throw new Error('anahtar bulunamadı');
+  const key = crypto.createPublicKey({ key: { kty: jwk.kty, n: jwk.n, e: jwk.e }, format: 'jwk' });
+  const ok = crypto.verify('RSA-SHA256', Buffer.from(parts[0] + '.' + parts[1]), key, Buffer.from(parts[2], 'base64url'));
+  if (!ok) throw new Error('imza geçersiz');
+  const p = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+  const now = Math.floor(Date.now() / 1000);
+  if (p.iss !== APPLE_ISS) throw new Error('iss geçersiz');
+  if (!appleAudiences().includes(p.aud)) throw new Error('aud geçersiz: ' + p.aud);
+  if (!(Number(p.exp) > now - 60)) throw new Error('jeton süresi dolmuş');
+  if (!p.sub) throw new Error('sub yok');
+  if (!rawNonce || typeof rawNonce !== 'string' || p.nonce !== sha256Hex(rawNonce)) throw new Error('nonce uyuşmuyor');
+  return p;
+}
+
+// POST /api/auth/apple — { identityToken, nonce, givenName, familyName, ...onaylar }
+router.post('/apple', async (req, res) => {
+  const { identityToken, nonce, givenName, familyName, kvkkAccepted, abroadConsent, ageConfirmed, kvkkVersion, emailUpdates } = req.body || {};
+  if (!identityToken) return res.status(400).json({ success: false, error: 'Apple kimlik jetonu gerekli' });
+  let p;
+  try {
+    p = await verifyAppleIdToken(identityToken, nonce);
+  } catch (err) {
+    console.error('❌ [Apple Auth] doğrulama hatası:', err.message);
+    return res.status(401).json({ success: false, error: 'Apple ile giriş doğrulanamadı. Lütfen tekrar deneyin.' });
+  }
+  if (p.email && (p.email_verified === false || p.email_verified === 'false')) {
+    return res.status(401).json({ success: false, error: 'Apple e-postası doğrulanmamış.' });
+  }
+  const clean = (v) => (typeof v === 'string' ? v.trim().slice(0, 60) : '');
+  const name = [clean(givenName), clean(familyName)].filter(Boolean).join(' '); // Apple adı yalnızca ilk girişte verir
+  try {
+    return await finishSocialLogin(req, res, 'apple', { sub: String(p.sub), email: p.email || '', name, picture: '' },
+      { kvkkAccepted, abroadConsent, ageConfirmed, kvkkVersion, emailUpdates });
+  } catch (err) {
+    console.error('Apple Auth Error:', err.message);
+    res.status(401).json({ success: false, error: 'Apple ile giriş doğrulanamadı. Lütfen tekrar deneyin.' });
+  }
+});
+
 router.post('/google', async (req, res) => {
   try {
     const { credential, accessToken, kvkkAccepted, abroadConsent, ageConfirmed, kvkkVersion, emailUpdates } = req.body;
@@ -551,79 +700,7 @@ router.post('/google', async (req, res) => {
         }
       } catch { /* profil bilgisi opsiyonel */ }
     }
-    const email = payload.email.toLowerCase().trim();
-
-    // Find or create user
-    let result = await db.execute({ sql: 'SELECT * FROM users WHERE email = ?', args: [email] });
-    let user = result.rows[0];
-
-    if (!user) {
-      const id = genId();
-      const trialExpiry = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString();
-      await db.execute({
-        sql: `INSERT INTO users (id, email, password, google_id, display_name, avatar, customer_type, is_premium, subscription_type, subscription_plan, subscription_status, subscription_expiry, premium_expires_at, ai_analysis_tokens, email_backup_enabled)
-              VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'trial', 'trial', 'active', ?, ?, 999, 0)`,
-        args: [id, email, 'google_oauth_' + crypto.randomBytes(16).toString('hex'), payload.sub, payload.name || '', payload.picture || '', CUSTOMER_TYPE.INDIVIDUAL, trialExpiry, trialExpiry]
-      });
-
-      const now = new Date().toISOString();
-      const nameParts = (payload.name || '').trim().split(/\s+/);
-      const firstName = nameParts[0] || '';
-      const lastName = nameParts.slice(1).join(' ') || '';
-      try {
-        await db.execute({
-          sql: `INSERT OR IGNORE INTO individual_profiles (user_id, first_name, last_name, updated_at) VALUES (?, ?, ?, ?)`,
-          args: [id, firstName, lastName, now]
-        });
-      } catch (profErr) {
-        console.warn('Google user profile insert warning:', profErr.message);
-      }
-
-      if (kvkkAccepted === true && abroadConsent === true) {
-        await saveConsents(id, { kvkkAccepted, abroadConsent, ageConfirmed, kvkkVersion, emailUpdates: emailUpdates === true });
-      }
-      result = await db.execute({ sql: 'SELECT * FROM users WHERE id = ?', args: [id] });
-      user = result.rows[0];
-    } else if (!user.google_id) {
-      await db.execute({
-        sql: "UPDATE users SET google_id = ?, display_name = COALESCE(NULLIF(display_name, ''), ?), avatar = COALESCE(NULLIF(avatar, ''), ?) WHERE id = ?",
-        args: [payload.sub, payload.name || '', payload.picture || '', user.id]
-      });
-      result = await db.execute({ sql: 'SELECT * FROM users WHERE id = ?', args: [user.id] });
-      user = result.rows[0];
-    }
-
-    if (Number(user.is_banned) === 1 && !(await liftExpiredBan(user))) {
-      return res.status(403).json({
-        success: false,
-        code: 'USER_BANNED',
-        isBanned: true,
-        banReason: banMessage(user),
-        bannedUntil: user.banned_until || null,
-        error: 'Hesabınız askıya alınmıştır.'
-      });
-    }
-
-    if (Number(user.email_verified) === 0) {
-      // E-postası hiç doğrulanmamış hesap: şifresini bu e-postanın sahibi olmayan biri koymuş olabilir
-      // (önceden kayıt olup sahibinin Google ile girmesini bekleme saldırısı). Gerçek sahip Google ile
-      // kanıtladığı için o şifre ve açık oturumlar geçersiz kılınır; isterse "şifremi unuttum" ile yeni şifre koyar.
-      await db.execute({
-        sql: `UPDATE users SET email_verified = 1, email_verify_code = NULL,
-                password = CASE WHEN password LIKE 'google_oauth_%' THEN password ELSE ? END,
-                token_version = COALESCE(token_version, 0) + 1
-              WHERE id = ?`,
-        args: ['google_oauth_' + crypto.randomBytes(16).toString('hex'), user.id]
-      });
-      invalidateUser(user.id);
-      user = (await db.execute({ sql: 'SELECT * FROM users WHERE id = ?', args: [user.id] })).rows[0];
-    }
-    const formatted = formatUser(user);
-    formatted.displayName = formatted.displayName || payload.name || '';
-    formatted.avatar = formatted.avatar || payload.picture || '';
-
-    const sid = await createSessionRow(req, user.id);
-    res.json({ success: true, user: formatted, token: signToken(user, sid), sessionId: sid });
+    return finishSocialLogin(req, res, 'google', payload, { kvkkAccepted, abroadConsent, ageConfirmed, kvkkVersion, emailUpdates });
   } catch (err) {
     console.error('Google Auth Error:', err.message);
     res.status(401).json({ success: false, error: 'Google ile giriş doğrulanamadı. Lütfen tekrar deneyin.' });

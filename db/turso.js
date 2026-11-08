@@ -442,6 +442,7 @@ function initDb() {
     { table: 'users', name: 'kvkk_version', def: 'TEXT' },
     { table: 'users', name: 'abroad_consent_at', def: 'TEXT' },
     { table: 'users', name: 'age_confirmed_at', def: 'TEXT' }, // "18 yaşından büyüğüm" beyanı
+    { table: 'users', name: 'apple_id', def: 'TEXT' }, // Apple ile Giriş kullanıcı kimliği (sub)
     { table: 'users', name: 'email_updates_consent', def: 'INTEGER DEFAULT 0' },
     { table: 'users', name: 'email_consent_at', def: 'TEXT' },
     { table: 'users', name: 'trial_reminded_at', def: 'TEXT' },

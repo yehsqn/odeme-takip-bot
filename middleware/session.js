@@ -162,7 +162,7 @@ async function authenticate(token) {
 
 // Oturum gerektirmeyen uçlar (giriş, kayıt, şifre sıfırlama, herkese açık kurlar, ödeme webhook'u)
 const PUBLIC = [
-  /^\/api\/auth\/(login|register|google|forgot-password|verify-reset-code|reset-password|verify-email|verify-link|resend-verification|unsubscribe)\/?$/,
+  /^\/api\/auth\/(login|register|google|apple|forgot-password|verify-reset-code|reset-password|verify-email|verify-link|resend-verification|unsubscribe)\/?$/,
   /^\/api\/exchange(\/|$)/,
   /^\/api\/subscription\/webhook\/?$/,
   /^\/api\/errors\/?$/,
