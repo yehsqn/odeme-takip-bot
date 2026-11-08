@@ -41,6 +41,7 @@ async function sendPush(userId, payload) {
     tokens,
     notification: text,
     android: { priority: 'high', notification: { channelId: 'payments' } },
+    apns: { payload: { aps: { sound: 'default' } } },
   });
   const dead = tokens.filter((_, i) => DEAD_TOKEN.has(result.responses[i]?.error?.code));
   for (const token of dead) await db.execute({ sql: 'DELETE FROM device_tokens WHERE token = ?', args: [token] });
