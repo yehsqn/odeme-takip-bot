@@ -384,8 +384,8 @@ router.post('/register', async (req, res) => {
     // Güvenlik: Şifreyi bcrypt ile hashle
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // Kullanıcı oluştur (Yeni kayıtlara otomatik 3 günlük PRO Deneme tanımla)
-    const trialExpiry = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString();
+    // Kullanıcı oluştur (Yeni kayıtlara otomatik 14 günlük PRO Deneme tanımla)
+    const trialExpiry = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
     await db.execute({
       sql: `INSERT INTO users (id, email, password, customer_type, display_name, email_verified, is_premium, subscription_type, subscription_plan, subscription_status, subscription_expiry, premium_expires_at, ai_analysis_tokens, email_backup_enabled)
             VALUES (?, ?, ?, ?, ?, 0, 1, 'trial', 'trial', 'active', ?, ?, 999, 0)`,
@@ -530,7 +530,7 @@ async function finishSocialLogin(req, res, provider, payload, consent) {
 
   if (!user) {
     const id = genId();
-    const trialExpiry = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString();
+    const trialExpiry = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
     await db.execute({
       sql: `INSERT INTO users (id, email, password, ${idCol}, display_name, avatar, customer_type, is_premium, subscription_type, subscription_plan, subscription_status, subscription_expiry, premium_expires_at, ai_analysis_tokens, email_backup_enabled)
             VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'trial', 'trial', 'active', ?, ?, 999, 0)`,

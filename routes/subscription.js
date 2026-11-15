@@ -154,7 +154,7 @@ router.get('/status/:userId', async (req, res) => {
   }
 });
 
-// POST /api/subscription/start-trial — Kullanıcının tek seferlik 3 günlük PRO Deneme hakkını başlatır
+// POST /api/subscription/start-trial — Kullanıcının tek seferlik 14 günlük PRO Deneme hakkını başlatır
 router.post('/start-trial', async (req, res) => {
   try {
     const userId = req.authUserId || req.body?.userId;
@@ -174,11 +174,11 @@ router.post('/start-trial', async (req, res) => {
     if (user.subscription_expiry || user.subscription_type === 'trial') {
       return res.status(400).json({
         success: false,
-        error: 'Ücretsiz 3 günlük PRO deneme hakkınızı daha önce kullandınız.'
+        error: 'Ücretsiz 14 günlük PRO deneme hakkınızı daha önce kullandınız.'
       });
     }
 
-    const trialExpiry = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString();
+    const trialExpiry = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
     await db.execute({
       sql: `UPDATE users SET
               subscription_type = 'trial',
@@ -197,7 +197,7 @@ router.post('/start-trial', async (req, res) => {
       isPremium: true,
       isTrial: true,
       expiry: trialExpiry,
-      message: '🎁 3 Günlük Ücretsiz PayPulse PRO Denemeniz Başladı!'
+      message: '🎁 14 Günlük Ücretsiz PayPulse PRO Denemeniz Başladı!'
     });
   } catch (err) {
     serverError(res, err);
