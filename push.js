@@ -94,8 +94,9 @@ async function sendPush(userId, payload) {
   const result = await messaging.sendEachForMulticast({
     tokens,
     notification: text,
-    android: { priority: 'high', notification: { channelId: 'payments' } },
-    apns: { payload: { aps: { sound: 'default' } } },
+    // Uygulamanın kendi bildirim sesi: Android'de res/raw/paypulse_notify, iOS'ta uygulama paketindeki public/paypulse_notify.wav
+    android: { priority: 'high', notification: { channelId: 'payments-v2', sound: 'paypulse_notify' } },
+    apns: { payload: { aps: { sound: 'public/paypulse_notify.wav' } } },
   });
   const dead = tokens.filter((_, i) => DEAD_TOKEN.has(result.responses[i]?.error?.code));
   for (const token of dead) await db.execute({ sql: 'DELETE FROM device_tokens WHERE token = ?', args: [token] });
