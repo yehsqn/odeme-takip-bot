@@ -3,6 +3,7 @@ const { serverError } = require('../middleware/serverError');
 const router = express.Router();
 const { db } = require('../db/turso');
 const { deleteUserData } = require('../accountDeletion');
+const appleTokens = require('../appleTokens');
 const { OAuth2Client } = require('google-auth-library');
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 const crypto = require('crypto');
@@ -636,7 +637,7 @@ async function verifyAppleIdToken(idToken, rawNonce) {
 
 // POST /api/auth/apple — { identityToken, nonce, givenName, familyName, ...onaylar }
 router.post('/apple', async (req, res) => {
-  const { identityToken, nonce, givenName, familyName, kvkkAccepted, abroadConsent, ageConfirmed, kvkkVersion, emailUpdates } = req.body || {};
+  const { identityToken, nonce, authorizationCode, givenName, familyName, kvkkAccepted, abroadConsent, ageConfirmed, kvkkVersion, emailUpdates } = req.body || {};
   if (!identityToken) return res.status(400).json({ success: false, error: 'Apple kimlik jetonu gerekli' });
   let p;
   try {
@@ -651,8 +652,11 @@ router.post('/apple', async (req, res) => {
   const clean = (v) => (typeof v === 'string' ? v.trim().slice(0, 60) : '');
   const name = [clean(givenName), clean(familyName)].filter(Boolean).join(' '); // Apple adı yalnızca ilk girişte verir
   try {
-    return await finishSocialLogin(req, res, 'apple', { sub: String(p.sub), email: p.email || '', name, picture: '' },
+    const out = await finishSocialLogin(req, res, 'apple', { sub: String(p.sub), email: p.email || '', name, picture: '' },
       { kvkkAccepted, abroadConsent, ageConfirmed, kvkkVersion, emailUpdates });
+    // Yanıt gönderildikten sonra: yetki kodunu yenileme jetonuna çevir (hesap silmede iptal için). Hata girişi etkilemez.
+    if (res.statusCode < 400) appleTokens.storeRefreshTokenFromCode(db, p.sub, authorizationCode).catch(() => {});
+    return out;
   } catch (err) {
     console.error('Apple Auth Error:', err.message);
     res.status(401).json({ success: false, error: 'Apple ile giriş doğrulanamadı. Lütfen tekrar deneyin.' });

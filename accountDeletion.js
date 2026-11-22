@@ -1,4 +1,5 @@
 const { db } = require('./db/turso');
+const { revokeForUser } = require('./appleTokens');
 
 /**
  * Hesabı ve kullanıcıya ait tüm kayıtları kalıcı olarak siler (KVKK).
@@ -6,6 +7,8 @@ const { db } = require('./db/turso');
  * Geri bildirim ve hata kayıtları anonimleştirilir (kimlik bilgisi silinir, kayıt kalır).
  */
 async function deleteUserData(userId) {
+  // Apple ile giriş yapılmışsa jeton önce Apple'da iptal edilir (App Store 5.1.1(v)); hata silmeyi durdurmaz
+  await revokeForUser(db, userId);
   await db.batch([
     { sql: 'DELETE FROM payments WHERE user_id = ?', args: [userId] },
     { sql: 'DELETE FROM settings WHERE user_id = ?', args: [userId] },
