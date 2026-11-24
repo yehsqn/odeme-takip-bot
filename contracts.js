@@ -54,11 +54,11 @@ function buildContract({ seller, consumer, acceptance, purchasedAt }) {
 
   const sections = [
     ['1. Taraflar', `<p>Satıcı / hizmet sağlayıcı: ${sellerLine}</p><p>Tüketici: ${consumerLine}</p>`],
-    ['2. Sözleşmenin konusu', `<p>PayPulse Premium: uygulamadaki Premium özelliklere (yapay zekâ analizleri, gelişmiş raporlar, sınırsız takip ve diğer Premium özellikler) abonelik süresince erişim sağlayan, elektronik ortamda anında ifa edilen dijital hizmettir. Premium, hesabına bağlıdır; aynı hesapla girdiğin tüm cihazlarda geçerlidir.</p>`],
+    ['2. Sözleşmenin konusu', `<p>BillBeat Premium: uygulamadaki Premium özelliklere (yapay zekâ analizleri, gelişmiş raporlar, sınırsız takip ve diğer Premium özellikler) abonelik süresince erişim sağlayan, elektronik ortamda anında ifa edilen dijital hizmettir. Premium, hesabına bağlıdır; aynı hesapla girdiğin tüm cihazlarda geçerlidir.</p>`],
     ['3. Tarihler', `<ul><li>Sözleşmenin kurulduğu (ön bilgilendirmenin onaylandığı) tarih: ${esc(fmtDate(acceptance.accepted_at))}</li><li>Hizmetin başladığı tarih: ${esc(fmtDate(purchasedAt))}</li></ul>`],
     ['4. Fiyat, ödeme ve yenileme', `<ul>
       <li>Seçilen plan: <strong>${plan}</strong> (vergiler dahil). Kesin tutar ödeme ekranında ${st.name} tarafından gösterilmiştir.</li>
-      <li>Ödeme ${st.name} üzerinden alınır; kart bilgilerin PayPulse'a iletilmez ve saklanmaz.</li>
+      <li>Ödeme ${st.name} üzerinden alınır; kart bilgilerin BillBeat'e iletilmez ve saklanmaz.</li>
       <li>Abonelik belirsiz sürelidir: <strong>sen iptal edene kadar devam eder</strong>. Ücret her dönem (${period}) başında o anki fiyatla ${st.name} üzerinden alınır. Fiyat değişikliği olursa tahsilattan önce bildirilir.</li>
       <li>Ek bir teslimat veya kargo ücreti yoktur.</li></ul>`],
     ['5. Ödeme alınamazsa', `<p>Yenileme bedeli ${st.name} tarafından tahsil edilemezse ${st.of} ödeme yeniden deneme süreci uygulanır; bedel tahsil edilemezse Premium erişimi sona erer. Bunun için gecikme faizi, ceza veya ek bir bedel istenmez.</p>`],
@@ -70,13 +70,13 @@ function buildContract({ seller, consumer, acceptance, purchasedAt }) {
   ];
 
   const body = sections.map(([h, c]) => `<h3 style="font-size:15px;margin:18px 0 6px;">${h}</h3>${c}`).join('\n');
-  const html = `<!doctype html><html lang="tr"><head><meta charset="utf-8"><title>PayPulse Premium Abonelik Sözleşmesi</title></head>
+  const html = `<!doctype html><html lang="tr"><head><meta charset="utf-8"><title>BillBeat Premium Abonelik Sözleşmesi</title></head>
 <body style="font-family:Arial,sans-serif;font-size:16px;line-height:1.5;color:#111827;max-width:680px;margin:0 auto;padding:24px;">
-<h2 style="margin-top:0;">PayPulse Premium — Ön Bilgilendirme Formu ve Abonelik Sözleşmesi</h2>
+<h2 style="margin-top:0;">BillBeat Premium — Ön Bilgilendirme Formu ve Abonelik Sözleşmesi</h2>
 <p>Bu e-posta, satın aldığın aboneliğin sözleşme örneğidir. Lütfen saklayın.</p>
 ${body}
 </body></html>`;
-  return { subject: 'PayPulse Premium abonelik sözleşmen', html };
+  return { subject: 'BillBeat Premium abonelik sözleşmen', html };
 }
 
 async function renderFor(row) {

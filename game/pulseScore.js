@@ -17,7 +17,7 @@ const STAGES = [
   { name: 'Kasaba', min: 1000, unlocks: 'Market, park, yollar' },
   { name: 'Şehir', min: 5000, unlocks: 'Banka, okul, gece ışıkları' },
   { name: 'Metropol', min: 15000, unlocks: 'Gökdelenler, metro, stadyum' },
-  { name: 'Pulse Kenti', min: 40000, unlocks: 'PayPulse kulesi, havai fişek gösterisi' },
+  { name: 'Pulse Kenti', min: 40000, unlocks: 'BillBeat kulesi, havai fişek gösterisi' },
 ];
 
 const LEAGUES = ['Bronz', 'Gümüş', 'Altın', 'Platin', 'Elmas'];

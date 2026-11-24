@@ -99,16 +99,16 @@ async function sendVerificationEmail(email, code) {
   // Sade işlem e-postası: Gmail'de "Birincil" sekmeye düşmesi için süslemesiz
   return sendMail({
     to: email,
-    subject: `PayPulse doğrulama kodun: ${code}`,
+    subject: `BillBeat doğrulama kodun: ${code}`,
     html: `<div style="font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.5;color:#222">
       <p>Merhaba,</p>
-      <p>PayPulse hesabını doğrulamak için bu kodu uygulamaya gir:</p>
+      <p>BillBeat hesabını doğrulamak için bu kodu uygulamaya gir:</p>
       <p style="font-size:26px;font-weight:bold;letter-spacing:4px;margin:16px 0">${code}</p>
       <p>Ya da bu bağlantıya tıkla: <a href="${verifyLink}">Hesabımı doğrula</a></p>
       <p>Kod 30 dakika geçerlidir. Bu kaydı sen yapmadıysan bu e-postayı yok sayabilirsin.</p>
-      <p>PayPulse</p>
+      <p>BillBeat</p>
     </div>`,
-    text: `Merhaba,\n\nPayPulse hesabını doğrulamak için bu kodu uygulamaya gir: ${code}\n\nYa da bu bağlantıyı aç: ${verifyLink}\n\nKod 30 dakika geçerlidir. Bu kaydı sen yapmadıysan bu e-postayı yok sayabilirsin.\n\nPayPulse`,
+    text: `Merhaba,\n\nBillBeat hesabını doğrulamak için bu kodu uygulamaya gir: ${code}\n\nYa da bu bağlantıyı aç: ${verifyLink}\n\nKod 30 dakika geçerlidir. Bu kaydı sen yapmadıysan bu e-postayı yok sayabilirsin.\n\nBillBeat`,
   });
 }
 
@@ -152,10 +152,10 @@ async function createSessionRow(req, userId) {
   }
 
   if (/capacitor/i.test(ua) || req?.headers?.['x-platform'] === 'capacitor') {
-    browser = 'PayPulse Mobil';
+    browser = 'BillBeat Mobil';
     deviceName = `${os} Uygulaması`;
   } else if (/electron/i.test(ua)) {
-    browser = 'PayPulse Masaüstü';
+    browser = 'BillBeat Masaüstü';
     deviceName = 'Masaüstü Uygulaması';
   } else if (/edg/i.test(ua)) {
     browser = 'Microsoft Edge';
@@ -765,7 +765,7 @@ router.put('/email-backup', async (req, res) => {
 
 // GET|POST /api/auth/unsubscribe?u=<id>&s=<imza> — e-postadaki abonelikten çıkma bağlantısı (POST: Gmail tek tık)
 router.all('/unsubscribe', async (req, res) => {
-  const page = (msg) => res.type('html').send(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PayPulse</title><body style="font-family:Arial,sans-serif;background:#0f172a;color:#e2e8f0;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0"><div style="max-width:420px;padding:28px;border:1px solid #334155;border-radius:16px;text-align:center"><h2 style="color:#38bdf8;margin-top:0">PayPulse</h2><p>${msg}</p></div></body>`);
+  const page = (msg) => res.type('html').send(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>BillBeat</title><body style="font-family:Arial,sans-serif;background:#0f172a;color:#e2e8f0;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0"><div style="max-width:420px;padding:28px;border:1px solid #334155;border-radius:16px;text-align:center"><h2 style="color:#38bdf8;margin-top:0">BillBeat</h2><p>${msg}</p></div></body>`);
   try {
     const uid = String(req.query.u || '');
     const sig = String(req.query.s || '');
@@ -971,15 +971,15 @@ async function sendResetEmail(email, code) {
   // Sade işlem e-postası: Gmail'de "Birincil" sekmeye düşmesi için süslemesiz
   return sendMail({
     to: email,
-    subject: `PayPulse şifre sıfırlama kodun: ${code}`,
+    subject: `BillBeat şifre sıfırlama kodun: ${code}`,
     html: `<div style="font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.5;color:#222">
       <p>Merhaba,</p>
-      <p>PayPulse şifreni yenilemek için bu kodu uygulamaya gir:</p>
+      <p>BillBeat şifreni yenilemek için bu kodu uygulamaya gir:</p>
       <p style="font-size:26px;font-weight:bold;letter-spacing:4px;margin:16px 0">${code}</p>
       <p>Kod 10 dakika geçerlidir. Bu isteği sen yapmadıysan bu e-postayı yok sayabilirsin; şifren değişmez.</p>
-      <p>PayPulse</p>
+      <p>BillBeat</p>
     </div>`,
-    text: `Merhaba,\n\nPayPulse şifreni yenilemek için bu kodu uygulamaya gir: ${code}\n\nKod 10 dakika geçerlidir. Bu isteği sen yapmadıysan bu e-postayı yok sayabilirsin; şifren değişmez.\n\nPayPulse`,
+    text: `Merhaba,\n\nBillBeat şifreni yenilemek için bu kodu uygulamaya gir: ${code}\n\nKod 10 dakika geçerlidir. Bu isteği sen yapmadıysan bu e-postayı yok sayabilirsin; şifren değişmez.\n\nBillBeat`,
   });
 }
 
@@ -1181,7 +1181,7 @@ router.get('/verify-link', async (req, res) => {
 
     return res.send(renderVerificationHtml({
       success: true,
-      message: 'Hesabınız başarıyla aktifleştirildi. Artık PayPulse\'ı tüm özellikleriyle güvenle kullanabilirsiniz.'
+      message: 'Hesabınız başarıyla aktifleştirildi. Artık BillBeat\'ı tüm özellikleriyle güvenle kullanabilirsiniz.'
     }));
   } catch (err) {
     return res.status(500).send(renderVerificationHtml({ success: false, error: 'Doğrulama sırasında bir hata oluştu. Lütfen tekrar deneyin.' }));
@@ -1194,7 +1194,7 @@ function renderVerificationHtml({ success, error, message }) {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>PayPulse — ${success ? 'E-posta Doğrulandı' : 'Doğrulama Hatası'}</title>
+  <title>BillBeat — ${success ? 'E-posta Doğrulandı' : 'Doğrulama Hatası'}</title>
   <style>
     * { margin:0; padding:0; box-sizing:border-box; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; }
     body {
@@ -1295,13 +1295,13 @@ function renderVerificationHtml({ success, error, message }) {
 </head>
 <body>
   <div class="card">
-    <div class="badge">✦ PAYPULSE GÜVENLİK</div>
+    <div class="badge">✦ BILLBEAT GÜVENLİK</div>
     <div class="icon-wrap">
       ${success ? '<svg class="checkmark" viewBox="0 0 24 24"><path d="M20 6L9 17L4 12"></path></svg>' : '<svg class="checkmark" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>'}
     </div>
     <h1>${success ? 'E-postanız Doğrulandı!' : 'Doğrulama Başarısız'}</h1>
     <p>${success ? (message || 'Hesabınız başarıyla aktifleştirildi.') : (error || 'Bir sorun oluştu.')}</p>
-    <a href="paypulse://open" class="btn" onclick="tryClose();">${success ? "PayPulse'ı Aç ve Sekmeyi Kapat" : 'Giriş Ekranına Dön'}</a>
+    <a href="paypulse://open" class="btn" onclick="tryClose();">${success ? "BillBeat'i Aç ve Sekmeyi Kapat" : 'Giriş Ekranına Dön'}</a>
     ${success ? `
     <div id="countWrap" style="font-size:12px;color:#94a3b8;margin-top:14px;line-height:1.5;">Bu sekme <b style="color:#818cf8;"><span id="vCount">2</span></b> saniye sonra otomatik kapanacak...</div>
     <script>

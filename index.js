@@ -105,7 +105,7 @@ const authLimiter = rateLimit({
 app.get('/', (req, res) => {
   res.json({
     status: 'ok',
-    message: 'PayPulse API aktif',
+    message: 'BillBeat API aktif',
     timestamp: new Date().toISOString()
   });
 });

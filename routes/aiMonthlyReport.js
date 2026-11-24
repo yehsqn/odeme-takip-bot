@@ -115,7 +115,7 @@ module.exports = function makeMonthlyReportHandler(requestGemini, hasKey) {
       const stats = await buildStats(userId, month);
       let report = null, source = 'local';
       if (stats.count && hasKey()) {
-        const prompt = `Sen PayPulse uygulamasının Türkçe finans asistanısın. Aşağıdaki aylık özet verisine göre kısa bir rapor yaz.
+        const prompt = `Sen BillBeat uygulamasının Türkçe finans asistanısın. Aşağıdaki aylık özet verisine göre kısa bir rapor yaz.
 Sadece verilen sayıları kullan, sayı uydurma. Samimi ama net ol. Yalnızca şu JSON'u döndür:
 {"summary": "en fazla 3 cümle ay özeti", "comparison": "geçen aya göre fark, 1-2 cümle", "tips": ["somut tasarruf önerisi 1", "öneri 2", "öneri 3"]}
 VERİ (TL): ${JSON.stringify(stats)}`;

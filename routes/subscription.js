@@ -197,7 +197,7 @@ router.post('/start-trial', async (req, res) => {
       isPremium: true,
       isTrial: true,
       expiry: trialExpiry,
-      message: '🎁 14 Günlük Ücretsiz PayPulse PRO Denemeniz Başladı!'
+      message: '🎁 14 Günlük Ücretsiz BillBeat PRO Denemeniz Başladı!'
     });
   } catch (err) {
     serverError(res, err);

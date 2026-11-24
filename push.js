@@ -9,7 +9,7 @@ const PUSH_TEXTS = {
   CITY_CHEER: (p) => ({ title: p.title, body: 'Ayrıntılar için dokun.' }),
   CHAT: () => ({ title: '💬 Yeni mesajın var', body: 'Okumak için dokun.' }),
   FRIEND_REQUEST: () => ({ title: '👥 Yeni arkadaşlık isteği', body: 'Görmek için dokun.' }),
-  TEST: () => ({ title: '🔔 PayPulse test bildirimi', body: 'Uygulama kapalıyken bildirimler çalışıyor.' }),
+  TEST: () => ({ title: '🔔 BillBeat test bildirimi', body: 'Uygulama kapalıyken bildirimler çalışıyor.' }),
 };
 const DEAD_TOKEN = new Set(['messaging/registration-token-not-registered', 'messaging/invalid-registration-token']);
 

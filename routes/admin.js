@@ -25,15 +25,15 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 async function sendUpdateEmails(rows, version, notes, broadcastId) {
   let sent = 0;
-  const subject = `PayPulse ${version} yayında`;
+  const subject = `BillBeat ${version} yayında`;
   const htmlFor = (unsub) => `<div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto;padding:24px;background:#0f172a;color:#f8fafc;border-radius:16px;border:1px solid #334155">
-    <h2 style="color:#38bdf8;margin-top:0">PayPulse ${esc(version)} yayında</h2>
+    <h2 style="color:#38bdf8;margin-top:0">BillBeat ${esc(version)} yayında</h2>
     <p style="color:#cbd5e1;white-space:pre-line">${esc(notes)}</p>
     <p><a href="${esc(DOWNLOAD_URL)}" style="display:inline-block;background:#3b82f6;color:#fff;padding:10px 18px;border-radius:10px;text-decoration:none">Yeni sürümü indir</a></p>
     <p style="color:#94a3b8;font-size:12px">Masaüstü uygulaması açıldığında kendiliğinden güncellenir; telefonda Google Play'den güncelleyebilirsin.
     Bu e-postayı, duyuru e-postası almayı kabul ettiğin için alıyorsun. <a href="${esc(unsub)}" style="color:#94a3b8">Abonelikten çık</a></p>
   </div>`;
-  const textFor = (unsub) => `PayPulse ${version} yayında\n\n${notes}\n\nYeni sürüm: ${DOWNLOAD_URL}\n\nMasaüstü uygulaması açıldığında kendiliğinden güncellenir; telefonda Google Play'den güncelleyebilirsin.\n\nAbonelikten çık: ${unsub}`;
+  const textFor = (unsub) => `BillBeat ${version} yayında\n\n${notes}\n\nYeni sürüm: ${DOWNLOAD_URL}\n\nMasaüstü uygulaması açıldığında kendiliğinden güncellenir; telefonda Google Play'den güncelleyebilirsin.\n\nAbonelikten çık: ${unsub}`;
   for (const u of rows) {
     const unsub = unsubscribeUrl(u.id);
     if (await sendMail({ to: u.email, subject, html: htmlFor(unsub), text: textFor(unsub), bulk: true, unsubscribeUrl: unsub })) sent++;
@@ -65,7 +65,7 @@ router.post('/broadcast-update', async (req, res) => {
     });
 
     // Uygulama içi: çevrimiçiyse anında, değilse bildirimler listesinde bekler
-    const title = `🚀 PayPulse ${version} yayında`;
+    const title = `🚀 BillBeat ${version} yayında`;
     const body = `${notes}\n\nMasaüstü sürüm kendiliğinden güncellenir; telefonda Google Play'den güncelleyebilirsin.`;
     for (let i = 0; i < users.length; i += 25) {
       await Promise.all(users.slice(i, i + 25).map(u => sendToUser(u.id, { type: 'APP_UPDATE', title, body }).catch(() => {})));

@@ -484,8 +484,8 @@ async function handleChat(req, res) {
 
     if (GEMINI_API_KEY) {
       try {
-        const systemPrompt = `Sen PayPulse uygulamasının içindeki samimi finans koçusun.
-Yalnızca kişisel finans, bütçe, borç, taksit, kart, birikim ve PayPulse uygulamasının kullanımı hakkında konuş. Selamlaşmaya kısaca karşılık ver.
+        const systemPrompt = `Sen BillBeat uygulamasının içindeki samimi finans koçusun.
+Yalnızca kişisel finans, bütçe, borç, taksit, kart, birikim ve BillBeat uygulamasının kullanımı hakkında konuş. Selamlaşmaya kısaca karşılık ver.
 Bu konular dışındaki istekleri (kod yazma, ödev, genel kültür vb.) tek cümleyle kibarca geri çevir ve finansla ilgili nasıl yardım edebileceğini söyle.
 Rakamları YALNIZCA aşağıdaki özetten al. Kendin toplama, çarpma veya tahmin yapma; özette olmayan bir tutar sorulursa bunu uygulamadaki ilgili ekranda görebileceğini söyle.
 Yatırım ürünü alım-satım tavsiyesi verme. Kısa yaz (en fazla 120 kelime), gerekirse emoji kullan. Yanıt dili Türkçe (kullanıcı başka dilde yazarsa o dilde).
@@ -540,13 +540,13 @@ Finansal sorularda bu verilere atıfta bulun.`;
     let reply = '';
     const q = message.toLowerCase().trim();
     if (/^(selam|merhaba|mrb|slm|hey|hi|hello|günaydın|iyi akşamlar|iyi geceler|sa|selamun aleyküm)\b/.test(q)) {
-      reply = 'Selam! 👋 Ben PayPulse asistanın. Borçların, taksitlerin ve bütçen hakkında konuşabiliriz. Nasıl yardımcı olayım?';
+      reply = 'Selam! 👋 Ben BillBeat asistanın. Borçların, taksitlerin ve bütçen hakkında konuşabiliriz. Nasıl yardımcı olayım?';
     } else if (/nas[ıi]ls[ıi]n|naber|ne haber|nasılsın/.test(q)) {
       reply = 'İyiyim, teşekkürler! 😊 Sen nasılsın? Finansal durumunla ilgili bir şey sormak ister misin?';
     } else if (/te[sş]ekk[uü]r|sa[gğ] ol|eyvallah/.test(q)) {
       reply = 'Rica ederim! 🙌 Başka bir şey sormak istersen buradayım.';
     } else if (/kimsin|sen kimsin|adın ne|ne yapabilirsin/.test(q)) {
-      reply = 'Ben PayPulse yapay zeka asistanıyım. Borç/taksit durumunu analiz eder, tasarruf önerileri verir ve sorularını yanıtlarım. 🤖';
+      reply = 'Ben BillBeat yapay zeka asistanıyım. Borç/taksit durumunu analiz eder, tasarruf önerileri verir ve sorularını yanıtlarım. 🤖';
     } else if (q.includes('borc') || q.includes('borç') || q.includes('ne kadar') || q.includes('kalan')) {
       reply = `📊 **Mevcut Borç Durumunuz:**\n\n` +
         `• **Toplam Kalan Borç:** ${context.totalRemainingDebt.toLocaleString('tr-TR')} TL\n` +
@@ -703,7 +703,7 @@ router.post('/parse-payment', async (req, res) => {
     const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Istanbul' }); // YYYY-MM-DD
     const bankList = Array.isArray(banks) && banks.length ? banks.slice(0, 30).join(', ') : 'Akbank, Garanti BBVA, İş Bankası, Yapı Kredi, Ziraat Bankası, Halkbank, Vakıfbank, QNB Finansbank, Diğer';
 
-    const instruction = `Sen PayPulse ödeme takip uygulamasının ödeme ekleme asistanısın. Kullanıcının ${audioPart ? 'ses kaydından' : imagePart ? 'fatura/fiş/ekstre fotoğrafından' : 'yazdığı metinden'} TEK bir ödeme kaydı çıkar.
+    const instruction = `Sen BillBeat ödeme takip uygulamasının ödeme ekleme asistanısın. Kullanıcının ${audioPart ? 'ses kaydından' : imagePart ? 'fatura/fiş/ekstre fotoğrafından' : 'yazdığı metinden'} TEK bir ödeme kaydı çıkar.
 Bugünün tarihi: ${today} (Türkiye). "Yarın", "ayın 23'ü", "haftaya cuma" gibi ifadeleri bu tarihe göre YYYY-MM-DD'ye çevir. Tarih yoksa bugünü kullan. Faturada "son ödeme tarihi" varsa onu kullan.
 type: kredi kartı harcaması/taksit ise "credit_card"; fatura, kira, aidat, abonelik, kredi, sigorta, vergi, okul vb. ise "bill".
 billCategory: type "bill" ise şu listeden en uygun olanı: ${BILL_CATEGORY_IDS.join(', ')}. Değilse boş bırak.

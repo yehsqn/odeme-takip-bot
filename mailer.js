@@ -30,7 +30,7 @@ async function trySmtp({ to, subject, html, plain, attachments, unsubscribeUrl }
       socketTimeout: 15000,
     });
     await transporter.sendMail({
-      from: `"PayPulse" <${smtpUser}>`,
+      from: `"BillBeat" <${smtpUser}>`,
       to,
       subject,
       html,
@@ -52,7 +52,7 @@ async function tryResend({ to, subject, html, plain, attachments, unsubscribeUrl
     const { Resend } = require('resend');
     const resend = new Resend(process.env.RESEND_API_KEY);
     const { error } = await resend.emails.send({
-      from: process.env.MAIL_FROM || 'PayPulse <bildirim@yehsqn.com>', // Resend'de doğrulanmış alan adı
+      from: process.env.MAIL_FROM || 'BillBeat <bildirim@yehsqn.com>', // Resend'de doğrulanmış alan adı
       to: [to],
       subject,
       html,
@@ -115,7 +115,7 @@ function sendOverdueEmail(email, items) {
 
   const html = `
     <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;padding:24px;background:#0f172a;color:#f8fafc;border-radius:16px;border:1px solid #334155;">
-      <h2 style="color:#38bdf8;text-align:center;margin-top:0;">PayPulse</h2>
+      <h2 style="color:#38bdf8;text-align:center;margin-top:0;">BillBeat</h2>
       <p style="font-size:15px;color:#cbd5e1;text-align:center;">⚠️ <b>${items.length}</b> adet gecikmiş ödemeniz var:</p>
       <table style="width:100%;border-collapse:collapse;font-size:14px;color:#f1f5f9;">
         <thead>
@@ -132,7 +132,7 @@ function sendOverdueEmail(email, items) {
 
   return sendMail({
     to: email,
-    subject: `PayPulse: ${items.length} gecikmiş ödemeniz var`,
+    subject: `BillBeat: ${items.length} gecikmiş ödemeniz var`,
     html,
   });
 }

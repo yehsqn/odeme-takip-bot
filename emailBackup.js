@@ -14,14 +14,14 @@ function sendBackupMail(user, content, dateStr) {
   const unsub = unsubscribeUrl(user.id);
   return sendMail({
     to: user.email,
-    subject: `PayPulse yedeğin (${dateStr})`,
+    subject: `BillBeat yedeğin (${dateStr})`,
     html: `<div style="font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.5;color:#222">
       <p>Merhaba,</p>
-      <p>PayPulse verilerinin güncel yedeği ektedir. Gerekirse uygulamada Ayarlar → Veri Yönetimi bölümünden geri yükleyebilirsin.</p>
+      <p>BillBeat verilerinin güncel yedeği ektedir. Gerekirse uygulamada Ayarlar → Veri Yönetimi bölümünden geri yükleyebilirsin.</p>
       <p>Ek dosyada finansal kayıtların bulunur, başkalarıyla paylaşma.</p>
       <p style="font-size:12px;color:#666">Yedek yalnızca verilerin değiştiğinde gönderilir. <a href="${unsub}" style="color:#666">Yedek e-postalarını kapat</a></p>
     </div>`,
-    text: `Merhaba,\n\nPayPulse verilerinin güncel yedeği ektedir. Gerekirse uygulamada Ayarlar → Veri Yönetimi bölümünden geri yükleyebilirsin.\n\nEk dosyada finansal kayıtların bulunur, başkalarıyla paylaşma.\n\nYedek e-postalarını kapat: ${unsub}`,
+    text: `Merhaba,\n\nBillBeat verilerinin güncel yedeği ektedir. Gerekirse uygulamada Ayarlar → Veri Yönetimi bölümünden geri yükleyebilirsin.\n\nEk dosyada finansal kayıtların bulunur, başkalarıyla paylaşma.\n\nYedek e-postalarını kapat: ${unsub}`,
     attachments: [{ filename: `paypulse-yedek-${dateStr}.json`, content: Buffer.from(content, 'utf8') }],
     bulk: true, // Gmail'in günlük sınırını korumak için önce Resend
     unsubscribeUrl: unsub,

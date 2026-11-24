@@ -8,7 +8,7 @@ const genId = () => crypto.randomBytes(12).toString('hex');
 
 // ── Güvenlik yardımcıları ───────────────────────────────────────────────
 // Kullanıcılar birbirlerinin e-postasını görmez: yalnızca görünen ad, avatar ve arkadaş kodu.
-const publicName = (row) => (row?.display_name && String(row.display_name).trim()) || 'PayPulse kullanıcısı';
+const publicName = (row) => (row?.display_name && String(row.display_name).trim()) || 'BillBeat kullanıcısı';
 
 // Tahmin edilemez arkadaş kodu: PP- + 8 karakter (karışmaya yol açan 0/O/1/I yok)
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
