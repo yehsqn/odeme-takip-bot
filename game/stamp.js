@@ -1,5 +1,5 @@
 /**
- * PulseCity hile koruması: oluşturma ve "ödendi" zamanlarını istemci değil sunucu belirler.
+ * BillCity hile koruması: oluşturma ve "ödendi" zamanlarını istemci değil sunucu belirler.
  * - createdAt: kayıt daha önce varsa eski değer korunur, yoksa sunucu saati.
  * - paidAt: taksit bu kayıtta ödendi yapıldıysa sunucu saati; zaten ödenmişse eski değer;
  *   ödenmemişse silinir. İstemcinin gönderdiği değerler yok sayılır.

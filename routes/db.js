@@ -127,7 +127,7 @@ router.post('/save/payments', async (req, res) => {
         uniqueMap.set(genId(), p);
       }
     });
-    // Oluşturma/ödeme zamanlarını sunucu belirler (PulseCity hile koruması)
+    // Oluşturma/ödeme zamanlarını sunucu belirler (BillCity hile koruması)
     const existing = await db.execute({ sql: 'SELECT payment_id, created_at, installment_plan FROM payments WHERE user_id = ?', args: [userId] });
     const uniquePayments = stampPayments(Array.from(uniqueMap.values()), existing.rows);
 

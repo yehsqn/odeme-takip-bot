@@ -196,7 +196,7 @@ router.post('/friends/:friendId/cheer', requireFriend, async (req, res) => {
       sendToUser(req.friendId, {
         type: 'CITY_CHEER',
         title: '🏙️ Şehrin tebrik edildi',
-        body: `${publicName(sender)} PulseCity şehrini ziyaret etti ve seni tebrik etti.`,
+        body: `${publicName(sender)} BillCity şehrini ziyaret etti ve seni tebrik etti.`,
       }).catch(() => {});
     }
     res.json({ success: true });

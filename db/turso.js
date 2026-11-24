@@ -180,7 +180,7 @@ function initDb() {
       created_at TEXT NOT NULL,
       PRIMARY KEY (user_id, month)
     )`,
-    // PulseCity oyun profili (takma ad, lig) — puan kayıtlardan hesaplanır, saklanmaz
+    // BillCity oyun profili (takma ad, lig) — puan kayıtlardan hesaplanır, saklanmaz
     `CREATE TABLE IF NOT EXISTS game_profiles (
       user_id    TEXT PRIMARY KEY,
       nickname   TEXT,
@@ -221,7 +221,7 @@ function initDb() {
       detail     TEXT,
       created_at TEXT DEFAULT (datetime('now'))
     )`,
-    // PulseCity arkadaş tebrikleri: arkadaş başına günde bir
+    // BillCity arkadaş tebrikleri: arkadaş başına günde bir
     `CREATE TABLE IF NOT EXISTS game_cheers (
       sender_id   TEXT NOT NULL,
       receiver_id TEXT NOT NULL,

@@ -1,6 +1,6 @@
 // OTOMATİK KOPYA — kaynak: src/game/pulseScore.js (düzenlemeyi orada yapın)
 /**
- * PulseCity puan motoru — saf fonksiyon, kayıtlardan puanı yeniden hesaplar.
+ * BillCity puan motoru — saf fonksiyon, kayıtlardan puanı yeniden hesaplar.
  * Aynı kod sunucuda da çalışır (server/game/pulseScore.js, scripts ile kopyalanır):
  * sıralama puanı sunucunun damgaladığı tarihlerle hesaplanır.
  *
@@ -17,7 +17,7 @@ const STAGES = [
   { name: 'Kasaba', min: 1000, unlocks: 'Market, park, yollar' },
   { name: 'Şehir', min: 5000, unlocks: 'Banka, okul, gece ışıkları' },
   { name: 'Metropol', min: 15000, unlocks: 'Gökdelenler, metro, stadyum' },
-  { name: 'Pulse Kenti', min: 40000, unlocks: 'BillBeat kulesi, havai fişek gösterisi' },
+  { name: 'Bill Kenti', min: 40000, unlocks: 'BillBeat kulesi, havai fişek gösterisi' },
 ];
 
 const LEAGUES = ['Bronz', 'Gümüş', 'Altın', 'Platin', 'Elmas'];

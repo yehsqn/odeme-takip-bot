@@ -263,7 +263,7 @@ async function pruneOldRecords() {
  * Her dakika başı çalışır ('* * * * *') ve o anki saate ayarlı kullanıcıların bildirimlerini tetikler.
  */
 function initCron() {
-  // PulseCity: her Pazartesi 00:10 (TR) haftalık lig turu
+  // BillCity: her Pazartesi 00:10 (TR) haftalık lig turu
   cron.schedule('10 0 * * 1', () => {
     require('./routes/game').runWeeklyLeagues().catch(err => console.error('[GAME] Lig turu hatası:', err.message));
   }, { timezone: 'Europe/Istanbul' });
